@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.env
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+*.txt
+!requirements.txt
+!README.md
+
+# Audio/temp files
+*.wav
+*.mp3
+*.ogg
+*.webm
+debug_*.wav
+
+# Model cache (optional - uncomment if you don't want to track downloaded models)
+# ~/.cache/huggingface/
+
+# Node.js / Frontend
+gemma-chatbot-ui/node_modules/
+gemma-chatbot-ui/dist/
+gemma-chatbot-ui/.env
+gemma-chatbot-ui/.env.local
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Test/debug files (prevent accidental commits)
+test_*.py
+check_*.py
+debug_*.py
+compare_*.py
+analyze_*.py
+find_*.py
+
+# Backup files
+*_old.py
+*.bak
+*.backup
+
+# Offload directory (model offload cache)
+offload/
