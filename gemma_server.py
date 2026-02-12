@@ -24,6 +24,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 
 # Fix SSL issues for model downloads
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -261,8 +262,8 @@ async def clear_model_cache():
 
 class AudioPayload(BaseModel):
     data: str  # base-64 WAV data
-    model: str = None  # optional model key
-    context: str = None  # optional context for the chat
+    model: Optional[str] = None  # optional model key
+    context: Optional[str] = None  # optional context for the chat
 
 
 def build_system_prompt(context: str = None) -> str:
@@ -398,8 +399,8 @@ async def ask_audio(payload: AudioPayload):
 
 class TextPayload(BaseModel):
     text: str  # user's text prompt
-    model: str = None  # optional model key
-    context: str = None  # optional context for the chat
+    model: Optional[str] = None  # optional model key
+    context: Optional[str] = None  # optional context for the chat
 
 
 @app.post("/ask_text")
@@ -506,7 +507,7 @@ async def ask_text(payload: TextPayload):
 async def ask_image(
     prompt: str = Form(...),
     image: UploadFile = File(...),
-    context: str = Form(None),
+    context: Optional[str] = Form(None),
 ):
     """Process image with text prompt using Gemma3n vision."""
     img_path = None

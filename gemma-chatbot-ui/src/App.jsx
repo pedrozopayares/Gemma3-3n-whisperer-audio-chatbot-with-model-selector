@@ -144,6 +144,15 @@ export default function App() {
   const [error, setError] = useState(null);
   const [isTTSEnabled, setIsTTSEnabled] = useState(true);
   
+  // Toggle TTS and stop any current speech if disabled
+  const toggleTTS = () => {
+    const newValue = !isTTSEnabled;
+    setIsTTSEnabled(newValue);
+    if (!newValue && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+  };
+  
   // Model selection
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState(null);
@@ -639,7 +648,43 @@ export default function App() {
   const addReply = (text) => {
     setConversation((p) => [...p, { role: "model", parts: [{ text }] }]);
     if (isTTSEnabled && "speechSynthesis" in window) {
-      const utter = new SpeechSynthesisUtterance(text.replace(/[-•▪●◦—–]/g, "-"));
+      // Clean text for natural speech
+      const cleanText = text
+        // Remove markdown formatting
+        .replace(/\*\*(.+?)\*\*/g, '$1')   // **bold** -> bold
+        .replace(/__(.+?)__/g, '$1')       // __bold__ -> bold
+        .replace(/\*(.+?)\*/g, '$1')       // *italic* -> italic
+        .replace(/_(.+?)_/g, '$1')         // _italic_ -> italic
+        // Remove bullets and list markers
+        .replace(/^[\s]*[-•▪●◦★☆→►▸]\s*/gm, '')  // Remove bullet points at line start
+        .replace(/^[\s]*\d+\.\s+/gm, '')   // Remove numbered list markers (1. 2. etc)
+        // Clean up symbols that TTS might pronounce
+        .replace(/[*_~`#>|]/g, '')         // Remove remaining markdown symbols
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')  // [link text](url) -> link text
+        .replace(/```[\s\S]*?```/g, '')    // Remove code blocks
+        .replace(/`([^`]+)`/g, '$1')       // `code` -> code
+        // Improve flow for spoken text
+        .replace(/:\s*$/gm, '. ')          // Colons at end of line -> period
+        .replace(/\n+/g, '. ')             // Line breaks -> pauses
+        .replace(/\s+/g, ' ')              // Multiple spaces -> single
+        .replace(/\.+/g, '.')              // Multiple periods -> single
+        .replace(/,\s*\./g, '.')           // ", ." -> "."
+        .replace(/\.\s*,/g, '.')           // ". ," -> "."
+        .trim();
+      
+      const utter = new SpeechSynthesisUtterance(cleanText);
+      utter.lang = "es-MX";
+      utter.rate = 1.0;
+      utter.pitch = 1.0;
+      
+      // Try to find a Spanish voice
+      const voices = window.speechSynthesis.getVoices();
+      const spanishVoice = voices.find(v => v.lang.startsWith("es")) || 
+                           voices.find(v => v.lang.includes("ES") || v.lang.includes("MX"));
+      if (spanishVoice) {
+        utter.voice = spanishVoice;
+      }
+      
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utter);
     }
@@ -658,7 +703,7 @@ export default function App() {
           <h1 className="text-lg font-bold">Gemma Voice Assistant</h1>
           <label className="flex items-center space-x-2">
             <span className="text-sm">TTS</span>
-            <input type="checkbox" checked={isTTSEnabled} onChange={() => setIsTTSEnabled(!isTTSEnabled)} />
+            <input type="checkbox" checked={isTTSEnabled} onChange={toggleTTS} />
           </label>
         </div>
         {/* Model selector */}
