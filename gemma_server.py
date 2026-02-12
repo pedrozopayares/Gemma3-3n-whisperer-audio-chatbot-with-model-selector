@@ -190,6 +190,31 @@ Consulta: {query}
 Clasificación:"""
 
 # --------------------------------------------------------------------
+# Context Management Configuration
+# --------------------------------------------------------------------
+# Context window size for Ollama (tokens)
+# Larger = longer conversations, but more memory
+CONTEXT_WINDOW_SIZE = 8192  # Default: 2048, can go up to 32k for some models
+
+# Maximum number of messages to keep in history before summarizing
+MAX_HISTORY_MESSAGES = 20
+
+# When history exceeds limit, keep these recent messages and summarize the rest
+KEEP_RECENT_MESSAGES = 6
+
+# Approximate tokens per character (conservative estimate for Spanish)
+CHARS_PER_TOKEN = 3.5
+
+# Summarization model (use fast model for efficiency)
+SUMMARY_MODEL = "qwen2.5:0.5b"
+
+SUMMARY_PROMPT = """Resume la siguiente conversación en 2-3 oraciones cortas, manteniendo los puntos clave y el contexto importante. Solo proporciona el resumen, sin introducción:
+
+{conversation}
+
+Resumen:"""
+
+# --------------------------------------------------------------------
 # Global Whisper model (loaded lazily)
 # --------------------------------------------------------------------
 whisper_model = None
@@ -237,7 +262,8 @@ async def ollama_chat(
     model: str,
     messages: List[Dict],
     temperature: float = 0.7,
-    max_tokens: int = 256,
+    max_tokens: int = 512,
+    num_ctx: int = None,
 ) -> str:
     """
     Send a chat request to Ollama.
@@ -247,10 +273,13 @@ async def ollama_chat(
         messages: List of {"role": "user/assistant/system", "content": "..."}
         temperature: Sampling temperature
         max_tokens: Maximum tokens to generate
+        num_ctx: Context window size (None = use global config)
     
     Returns:
         Generated text response
     """
+    ctx_size = num_ctx or CONTEXT_WINDOW_SIZE
+    
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{OLLAMA_BASE_URL}/api/chat",
@@ -261,6 +290,7 @@ async def ollama_chat(
                 "options": {
                     "temperature": temperature,
                     "num_predict": max_tokens,
+                    "num_ctx": ctx_size,
                 }
             },
             timeout=120.0,
@@ -387,26 +417,157 @@ app.add_middleware(
 
 # =============================================================================
 # CONTEXTO INTERNO DEL BACKEND (editar aquí para cambiar el comportamiento base)
+# Este es el SYSTEM PROMPT principal que define la personalidad del asistente
 # =============================================================================
 INTERNAL_CONTEXT = """
 Eres un asistente experto que trabaja para una empresa de tecnología.
-Siempre respondes de forma profesional, precisa y concisa.
+Respondes en español de forma profesional, precisa y concisa.
 Cuando no sepas algo, lo admites honestamente.
+Eres amigable y servicial, ayudando al usuario con cualquier consulta.
 """.strip()
 # =============================================================================
 
 
-def build_system_prompt(user_context: str = None) -> str:
-    """Build system prompt combining internal context with optional user context."""
-    base_prompt = "Eres un asistente amigable y útil. Responde en español de forma concisa."
+# --------------------------------------------------------------------
+# Context Management Functions
+# --------------------------------------------------------------------
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count for a text (approximate)."""
+    return int(len(text) / CHARS_PER_TOKEN)
+
+
+def estimate_messages_tokens(messages: List[Dict]) -> int:
+    """Estimate total tokens for a list of messages."""
+    total = 0
+    for msg in messages:
+        total += estimate_tokens(msg.get("text", "") or msg.get("content", ""))
+        total += 4  # Overhead per message
+    return total
+
+
+async def summarize_conversation(messages: List[Dict]) -> str:
+    """
+    Use a fast model to summarize a conversation.
     
-    combined_context = INTERNAL_CONTEXT
+    Args:
+        messages: List of messages to summarize
+    
+    Returns:
+        A brief summary string
+    """
+    if not messages:
+        return ""
+    
+    # Format conversation for summarization
+    conversation_text = ""
+    for msg in messages:
+        role = "Usuario" if msg.get("role") in ["user", "usuario"] else "Asistente"
+        text = msg.get("text", "") or msg.get("content", "")
+        conversation_text += f"{role}: {text}\n"
+    
+    prompt = SUMMARY_PROMPT.format(conversation=conversation_text)
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model": SUMMARY_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "num_predict": 150,
+                    }
+                },
+                timeout=30.0,
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                summary = data.get("response", "").strip()
+                print(f"📝 Summarized {len(messages)} messages: {summary[:100]}...")
+                return summary
+            else:
+                print(f"Summary error: {response.text}")
+                return ""
+    except Exception as e:
+        print(f"Summary exception: {e}")
+        return ""
+
+
+def truncate_history_simple(
+    history: List[Dict[str, str]],
+    max_messages: int = MAX_HISTORY_MESSAGES
+) -> List[Dict[str, str]]:
+    """
+    Simple truncation: keep only the most recent messages.
+    
+    Args:
+        history: Full conversation history
+        max_messages: Maximum messages to keep
+    
+    Returns:
+        Truncated history
+    """
+    if len(history) <= max_messages:
+        return history
+    
+    print(f"✂️ Truncating history from {len(history)} to {max_messages} messages")
+    return history[-max_messages:]
+
+
+async def manage_context(
+    history: List[Dict[str, str]],
+    max_messages: int = MAX_HISTORY_MESSAGES,
+    keep_recent: int = KEEP_RECENT_MESSAGES,
+) -> tuple[List[Dict[str, str]], str]:
+    """
+    Intelligently manage conversation context.
+    
+    If history is too long:
+    1. Keep the most recent messages
+    2. Summarize older messages
+    3. Return truncated history + summary
+    
+    Args:
+        history: Full conversation history
+        max_messages: Threshold for triggering summarization
+        keep_recent: Number of recent messages to keep
+    
+    Returns:
+        Tuple of (truncated_history, context_summary)
+    """
+    if not history or len(history) <= max_messages:
+        return history or [], ""
+    
+    # Split into old and recent
+    old_messages = history[:-keep_recent]
+    recent_messages = history[-keep_recent:]
+    
+    # Summarize old messages
+    summary = await summarize_conversation(old_messages)
+    
+    print(f"🔄 Context managed: {len(history)} → {len(recent_messages)} msgs + summary")
+    
+    return recent_messages, summary
+
+
+def build_system_prompt(user_context: str = None, context_summary: str = None) -> str:
+    """Build system prompt combining internal context with optional user context and summary."""
+    # INTERNAL_CONTEXT es el prompt base principal
+    system_prompt = INTERNAL_CONTEXT if INTERNAL_CONTEXT else "Eres un asistente amigable y útil. Responde en español de forma concisa."
+    
+    # Agregar resumen de conversación anterior si hay
+    if context_summary:
+        system_prompt = f"{system_prompt}\n\nResumen de la conversación anterior: {context_summary}"
+    
+    # Agregar contexto del usuario (desde el frontend)
     if user_context:
-        combined_context = f"{INTERNAL_CONTEXT}\n\n{user_context}"
+        system_prompt = f"{system_prompt}\n\nContexto del usuario: {user_context}"
     
-    if combined_context:
-        return f"{base_prompt}\n\nContexto adicional: {combined_context}"
-    return base_prompt
+    return system_prompt
 
 
 def build_ollama_messages(
@@ -624,14 +785,25 @@ async def ask_audio(payload: AudioPayload):
             ctx_preview = payload.context[:100] + '...' if len(payload.context) > 100 else payload.context
             print(f"With context: '{ctx_preview}'")
         
+        # Manage conversation context (truncate + summarize if needed)
+        managed_history, context_summary = await manage_context(payload.history or [])
+        
         if payload.history:
-            print(f"\n--- Chat History ({len(payload.history)} messages) ---")
-            for i, msg in enumerate(payload.history):
+            original_count = len(payload.history)
+            managed_count = len(managed_history)
+            if original_count != managed_count:
+                print(f"\n--- Context Management: {original_count} → {managed_count} messages ---")
+                if context_summary:
+                    print(f"Summary: {context_summary[:100]}...")
+            else:
+                print(f"\n--- Chat History ({managed_count} messages) ---")
+            
+            for i, msg in enumerate(managed_history):
                 preview = msg['text'][:80] + '...' if len(msg['text']) > 80 else msg['text']
                 print(f"  [{i+1}] {msg['role']}: {preview}")
         
-        system_prompt = build_system_prompt(payload.context)
-        messages = build_ollama_messages(system_prompt, user_text, payload.history)
+        system_prompt = build_system_prompt(payload.context, context_summary)
+        messages = build_ollama_messages(system_prompt, user_text, managed_history)
         
         response = await ollama_chat(model, messages)
         print(f"Ollama response: '{response}'")
@@ -690,14 +862,25 @@ async def ask_text(payload: TextPayload):
             ctx_preview = payload.context[:100] + '...' if len(payload.context) > 100 else payload.context
             print(f"With context: '{ctx_preview}'")
         
+        # Manage conversation context (truncate + summarize if needed)
+        managed_history, context_summary = await manage_context(payload.history or [])
+        
         if payload.history:
-            print(f"\n--- Chat History ({len(payload.history)} messages) ---")
-            for i, msg in enumerate(payload.history):
+            original_count = len(payload.history)
+            managed_count = len(managed_history)
+            if original_count != managed_count:
+                print(f"\n--- Context Management: {original_count} → {managed_count} messages ---")
+                if context_summary:
+                    print(f"Summary: {context_summary[:100]}...")
+            else:
+                print(f"\n--- Chat History ({managed_count} messages) ---")
+            
+            for i, msg in enumerate(managed_history):
                 preview = msg['text'][:80] + '...' if len(msg['text']) > 80 else msg['text']
                 print(f"  [{i+1}] {msg['role']}: {preview}")
         
-        system_prompt = build_system_prompt(payload.context)
-        messages = build_ollama_messages(system_prompt, user_text, payload.history)
+        system_prompt = build_system_prompt(payload.context, context_summary)
+        messages = build_ollama_messages(system_prompt, user_text, managed_history)
         
         response = await ollama_chat(model, messages)
         print(f"Ollama response: '{response}'")
