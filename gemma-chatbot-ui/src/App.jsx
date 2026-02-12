@@ -34,16 +34,19 @@ const MarkdownText = ({ text }) => {
   // Convert LaTeX math to readable text
   const convertLatexToText = (str) => {
     return str
+      // Handle display math \[...\] or $$...$$ (multiline - must come first)
+      .replace(/\\\[([\s\S]+?)\\\]/g, (_, math) => convertLatexMath(math))
+      .replace(/\$\$([\s\S]+?)\$\$/g, (_, math) => convertLatexMath(math))
       // Handle inline math \(...\) or $...$
       .replace(/\\\((.+?)\\\)/g, (_, math) => convertLatexMath(math))
-      .replace(/\$(.+?)\$/g, (_, math) => convertLatexMath(math))
-      // Handle display math \[...\] or $$...$$
-      .replace(/\\\[(.+?)\\\]/g, (_, math) => convertLatexMath(math))
-      .replace(/\$\$(.+?)\$\$/g, (_, math) => convertLatexMath(math));
+      .replace(/\$([^$\n]+?)\$/g, (_, math) => convertLatexMath(math));
   };
 
   const convertLatexMath = (math) => {
     return math
+      // Clean up whitespace first
+      .replace(/\n/g, ' ')
+      .replace(/\s+/g, ' ')
       // Operators
       .replace(/\\times/g, '×')
       .replace(/\\div/g, '÷')
@@ -60,10 +63,10 @@ const MarkdownText = ({ text }) => {
       .replace(/\\equiv/g, '≡')
       .replace(/\\lt/g, '<')
       .replace(/\\gt/g, '>')
-      // Fractions: \frac{a}{b} -> a/b
-      .replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, '($1/$2)')
+      // Fractions: \frac{a}{b} -> a/b (handle nested braces)
+      .replace(/\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, '($1 / $2)')
       // Square root: \sqrt{x} -> √x
-      .replace(/\\sqrt\{([^}]+)\}/g, '√($1)')
+      .replace(/\\sqrt\s*\{([^}]+)\}/g, '√($1)')
       .replace(/\\sqrt\s*(\d+)/g, '√$1')
       // Superscript: x^{2} or x^2 -> x²
       .replace(/\^{2}/g, '²')
@@ -99,11 +102,14 @@ const MarkdownText = ({ text }) => {
       .replace(/\\therefore/g, '∴')
       .replace(/\\because/g, '∵')
       // Clean up remaining LaTeX commands
-      .replace(/\\text\{([^}]+)\}/g, '$1')
-      .replace(/\\mathrm\{([^}]+)\}/g, '$1')
-      .replace(/\\mathbf\{([^}]+)\}/g, '$1')
+      .replace(/\\text\s*\{([^}]+)\}/g, '$1')
+      .replace(/\\mathrm\s*\{([^}]+)\}/g, '$1')
+      .replace(/\\mathbf\s*\{([^}]+)\}/g, '$1')
+      // Remove any remaining backslash commands
+      .replace(/\\[a-zA-Z]+/g, '')
       .replace(/\{/g, '')
       .replace(/\}/g, '')
+      .replace(/\s+/g, ' ')
       .trim();
   };
 
@@ -767,10 +773,64 @@ export default function App() {
     }
   };
 
+  // Helper function to convert LaTeX math to speakable text
+  const cleanLatexForSpeech = (math) => {
+    return math
+      // Clean up newlines and extra whitespace first
+      .replace(/\n/g, ' ')
+      .replace(/\s+/g, ' ')
+      // Convert \text{} commands to plain text
+      .replace(/\\text\s*\{([^}]+)\}/g, '$1')
+      // Convert operators to spoken words
+      .replace(/\\times/g, ' por ')
+      .replace(/\\div/g, ' dividido ')
+      .replace(/\\pm/g, ' más o menos ')
+      .replace(/\\cdot/g, ' por ')
+      .replace(/×/g, ' por ')
+      .replace(/÷/g, ' dividido ')
+      // Convert fractions to spoken form
+      .replace(/\\frac\s*\{([^}]+)\}\s*\{([^}]+)\}/g, '$1 sobre $2')
+      // Convert equals and comparisons
+      .replace(/=/g, ' igual a ')
+      .replace(/\\leq/g, ' menor o igual a ')
+      .replace(/\\geq/g, ' mayor o igual a ')
+      .replace(/\\neq/g, ' diferente de ')
+      .replace(/\\approx/g, ' aproximadamente ')
+      .replace(/<=/g, ' menor o igual a ')
+      .replace(/>=/g, ' mayor o igual a ')
+      .replace(/</g, ' menor que ')
+      .replace(/>/g, ' mayor que ')
+      // Convert square root
+      .replace(/\\sqrt\s*\{([^}]+)\}/g, ' raíz cuadrada de $1')
+      .replace(/\\sqrt\s*(\d+)/g, ' raíz cuadrada de $1')
+      // Convert exponents
+      .replace(/\^{2}/g, ' al cuadrado')
+      .replace(/\^2/g, ' al cuadrado')
+      .replace(/\^{3}/g, ' al cubo')
+      .replace(/\^3/g, ' al cubo')
+      .replace(/\^\{([^}]+)\}/g, ' elevado a $1')
+      .replace(/\^(\d+)/g, ' elevado a $1')
+      // Remove remaining LaTeX commands
+      .replace(/\\[a-zA-Z]+/g, ' ')
+      // Clean up braces and special chars
+      .replace(/[{}]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
   // ----------------- TTS -----------------
-  // Clean text for TTS (remove emojis, markdown, etc.)
+  // Clean text for TTS (remove emojis, markdown, LaTeX, etc.)
   const cleanTextForTTS = (text) => {
-    return text
+    // First, convert LaTeX math expressions to speakable text
+    let processed = text
+      // Handle display math \[...\] or $$...$$ (multiline - must come first)
+      .replace(/\\\[([\s\S]+?)\\\]/g, (_, math) => cleanLatexForSpeech(math))
+      .replace(/\$\$([\s\S]+?)\$\$/g, (_, math) => cleanLatexForSpeech(math))
+      // Handle inline math \(...\) or $...$
+      .replace(/\\\((.+?)\\\)/g, (_, math) => cleanLatexForSpeech(math))
+      .replace(/\$([^$\n]+?)\$/g, (_, math) => cleanLatexForSpeech(math));
+    
+    return processed
       // Remove emojis and emoticons
       .replace(/[\u{1F600}-\u{1F64F}]/gu, '')  // Emoticons
       .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')  // Symbols & pictographs
@@ -810,6 +870,9 @@ export default function App() {
       .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')  // [link text](url) -> link text
       .replace(/```[\s\S]*?```/g, '')    // Remove code blocks
       .replace(/`([^`]+)`/g, '$1')       // `code` -> code
+      // Convert math division symbols to speakable text
+      .replace(/(\d+)\s*\/\s*(\d+)/g, '$1 sobre $2')  // 1/2 -> 1 sobre 2
+      .replace(/\(([^)]+)\)\/\(([^)]+)\)/g, '$1 sobre $2')  // (a)/(b) -> a sobre b
       // Improve flow for spoken text
       .replace(/:\s*$/gm, '. ')          // Colons at end of line -> period
       .replace(/\n+/g, '. ')             // Line breaks -> pauses
