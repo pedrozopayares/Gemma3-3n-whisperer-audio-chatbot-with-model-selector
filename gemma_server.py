@@ -18,13 +18,15 @@ import shutil
 import tempfile
 import torch
 import ssl
+import subprocess
+import platform
 import numpy as np
 import scipy.io.wavfile as wavfile
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 # Fix SSL issues for model downloads
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -264,14 +266,89 @@ class AudioPayload(BaseModel):
     data: str  # base-64 WAV data
     model: Optional[str] = None  # optional model key
     context: Optional[str] = None  # optional context for the chat
+    history: Optional[List[Dict[str, str]]] = None  # conversation history [{"role": "user/model", "text": "..."}]
 
 
-def build_system_prompt(context: str = None) -> str:
-    """Build system prompt with optional user context."""
+# =============================================================================
+# CONTEXTO INTERNO DEL BACKEND (editar aquí para cambiar el comportamiento base)
+# =============================================================================
+INTERNAL_CONTEXT = """
+Eres un asistente experto que trabaja para una empresa de tecnología.
+Siempre respondes de forma profesional, precisa y concisa.
+Cuando no sepas algo, lo admites honestamente.
+""".strip()
+# =============================================================================
+
+
+def build_system_prompt(user_context: str = None) -> str:
+    """Build system prompt combining internal context with optional user context."""
     base_prompt = "Eres un asistente amigable y útil. Responde en español de forma concisa."
-    if context:
-        return f"{base_prompt}\n\nContexto adicional: {context}"
+    
+    # Combine internal context with user context from frontend
+    combined_context = INTERNAL_CONTEXT
+    if user_context:
+        combined_context = f"{INTERNAL_CONTEXT}\n\n{user_context}"
+    
+    if combined_context:
+        return f"{base_prompt}\n\nContexto adicional: {combined_context}"
     return base_prompt
+
+
+def build_messages_for_gemma(model_family: str, system_prompt: str, user_text: str, history: List[Dict[str, str]] = None):
+    """
+    Build messages array for Gemma model with conversation history.
+    
+    Args:
+        model_family: 'gemma2', 'gemma3', or 'gemma3n'
+        system_prompt: System instructions
+        user_text: Current user message
+        history: Previous messages [{"role": "user" or "model", "text": "..."}]
+    
+    Returns:
+        messages array formatted for the model family
+    """
+    if model_family == "gemma2":
+        # Gemma 2 uses simple chat template
+        # Build conversation string with history
+        conversation_parts = [system_prompt]
+        
+        if history:
+            for msg in history:
+                role_label = "Usuario" if msg["role"] == "user" else "Asistente"
+                conversation_parts.append(f"{role_label}: {msg['text']}")
+        
+        conversation_parts.append(f"Usuario: {user_text}")
+        full_content = "\n\n".join(conversation_parts)
+        
+        return [{"role": "user", "content": full_content}]
+    else:
+        # Gemma 3 and 3n use processor with structured content
+        messages = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": system_prompt}],
+            },
+        ]
+        
+        # Add history messages
+        if history:
+            for msg in history:
+                role = msg["role"] if msg["role"] in ["user", "assistant"] else ("user" if msg["role"] == "user" else "assistant")
+                # Gemma uses 'assistant' not 'model'
+                if msg["role"] == "model":
+                    role = "assistant"
+                messages.append({
+                    "role": role,
+                    "content": [{"type": "text", "text": msg["text"]}],
+                })
+        
+        # Add current user message
+        messages.append({
+            "role": "user",
+            "content": [{"type": "text", "text": user_text}],
+        })
+        
+        return messages
 
 
 @app.post("/ask")
@@ -299,10 +376,38 @@ async def ask_audio(payload: AudioPayload):
         duration = len(audio_data) / sample_rate
         print(f"Audio: {sample_rate}Hz, {duration:.2f}s, shape={audio_data.shape}")
         
-        # Step 1: Transcribe with Whisper
+        # Normalize audio volume for better Whisper transcription
+        if len(audio_data) > 0:
+            audio_float = audio_data.astype(np.float32)
+            max_val = np.max(np.abs(audio_float))
+            if max_val > 0:
+                # Normalize to 90% of max range to avoid clipping
+                audio_normalized = (audio_float / max_val) * 0.9 * 32767
+                audio_normalized = audio_normalized.astype(np.int16)
+                wavfile.write(wav_path, sample_rate, audio_normalized)
+                print(f"Audio normalized (peak: {max_val:.0f} -> {np.max(np.abs(audio_normalized)):.0f})")
+        
+        # Step 1: Transcribe with Whisper (optimized for Spanish)
         print("\n--- STEP 1: Whisper Transcription ---")
         whisper_m = get_whisper_model()
-        whisper_result = whisper_m.transcribe(wav_path, language="es")
+        
+        # Whisper optimization for Spanish:
+        # - language="es": Force Spanish detection (skips language detection overhead)
+        # - task="transcribe": Explicit transcription mode
+        # - initial_prompt: Primes the model with Spanish context and common phrases
+        # - temperature=0: More deterministic, better for clear speech
+        # - condition_on_previous_text=False: Prevents hallucination loops
+        initial_prompt = "Esta es una conversación en español. El usuario hace preguntas o da instrucciones."
+        
+        whisper_result = whisper_m.transcribe(
+            wav_path,
+            language="es",
+            task="transcribe",
+            initial_prompt=initial_prompt,
+            temperature=0,
+            condition_on_previous_text=False,
+            fp16=False  # Better accuracy on CPU
+        )
         user_text = whisper_result["text"].strip()
         print(f"Transcribed: '{user_text}'")
         
@@ -318,15 +423,20 @@ async def ask_audio(payload: AudioPayload):
         print(f"Sending to Gemma: '{user_text}'")
         if payload.context:
             print(f"With context: '{payload.context[:100]}...'" if len(payload.context) > 100 else f"With context: '{payload.context}'")
+        if payload.history:
+            print(f"\n--- Chat History ({len(payload.history)} messages) ---")
+            for i, msg in enumerate(payload.history):
+                role = msg.get('role', 'unknown')
+                text = msg.get('text', '')
+                preview = text[:80] + '...' if len(text) > 80 else text
+                print(f"  [{i+1}] {role}: {preview}")
+            print("--- End History ---\n")
         
         system_prompt = build_system_prompt(payload.context)
+        messages = build_messages_for_gemma(model_family, system_prompt, user_text, payload.history)
         
-        # Different handling for Gemma 2 (tokenizer) vs Gemma 3/3n (processor)
+        # Process messages for model
         if model_family == "gemma2":
-            # Gemma 2 uses simple chat template
-            messages = [
-                {"role": "user", "content": f"{system_prompt}\n\n{user_text}"}
-            ]
             inputs = processor.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
@@ -334,17 +444,6 @@ async def ask_audio(payload: AudioPayload):
             ).to(model.device)
             input_ids = inputs
         else:
-            # Gemma 3 and 3n use processor with structured content
-            messages = [
-                {
-                    "role": "system",
-                    "content": [{"type": "text", "text": system_prompt}],
-                },
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": user_text}],
-                },
-            ]
             inputs = processor.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
@@ -401,6 +500,7 @@ class TextPayload(BaseModel):
     text: str  # user's text prompt
     model: Optional[str] = None  # optional model key
     context: Optional[str] = None  # optional context for the chat
+    history: Optional[List[Dict[str, str]]] = None  # conversation history [{"role": "user/model", "text": "..."}]
 
 
 @app.post("/ask_text")
@@ -427,15 +527,22 @@ async def ask_text(payload: TextPayload):
         print(f"Sending to Gemma: '{user_text}'")
         if payload.context:
             print(f"With context: '{payload.context[:100]}...'" if len(payload.context) > 100 else f"With context: '{payload.context}'")
+        if payload.history:
+            print(f"\n--- Chat History ({len(payload.history)} messages) ---")
+            for i, msg in enumerate(payload.history):
+                role = msg.get('role', 'unknown')
+                text = msg.get('text', '')
+                preview = text[:80] + '...' if len(text) > 80 else text
+                print(f"  [{i+1}] {role}: {preview}")
+            print("--- End History ---\n")
         
         system_prompt = build_system_prompt(payload.context)
         
+        # Build messages with history support
+        messages = build_messages_for_gemma(model_family, system_prompt, user_text, payload.history)
+        
         # Different handling for Gemma 2 (tokenizer) vs Gemma 3/3n (processor)
         if model_family == "gemma2":
-            # Gemma 2 uses simple chat template
-            messages = [
-                {"role": "user", "content": f"{system_prompt}\n\n{user_text}"}
-            ]
             inputs = processor.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
@@ -443,17 +550,6 @@ async def ask_text(payload: TextPayload):
             ).to(model.device)
             input_ids = inputs
         else:
-            # Gemma 3 and 3n use processor with structured content
-            messages = [
-                {
-                    "role": "system",
-                    "content": [{"type": "text", "text": system_prompt}],
-                },
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": user_text}],
-                },
-            ]
             inputs = processor.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
@@ -573,6 +669,188 @@ async def ask_image(
         if img_path and os.path.exists(img_path):
             os.remove(img_path)
 
+
+# --------------------------------------------------------------------
+# Text-to-Speech (native macOS or cross-platform)
+# --------------------------------------------------------------------
+
+class TTSRequest(BaseModel):
+    text: str
+    voice: Optional[str] = None  # Voice name (e.g., "Paulina", "Monica")
+    rate: Optional[int] = 180    # Words per minute
+
+@app.post("/tts")
+async def text_to_speech(request: TTSRequest):
+    """
+    Convert text to speech using native TTS.
+    Returns audio as base64-encoded WAV.
+    """
+    try:
+        text = request.text.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="No text provided")
+        
+        system = platform.system()
+        
+        if system == "Darwin":  # macOS
+            # Use macOS 'say' command with AIFF output, then convert to WAV
+            with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as aiff_file:
+                aiff_path = aiff_file.name
+            
+            try:
+                # Spanish voices on macOS: Paulina (Mexico), Monica (Spain), Jorge (Spain)
+                voice = request.voice or "Paulina"
+                rate = request.rate or 180
+                
+                # Generate speech with 'say' command
+                cmd = ["say", "-v", voice, "-r", str(rate), "-o", aiff_path, text]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                
+                if result.returncode != 0:
+                    print(f"say command error: {result.stderr}")
+                    raise HTTPException(status_code=500, detail="TTS generation failed")
+                
+                # Convert AIFF to WAV using afconvert
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
+                    wav_path = wav_file.name
+                
+                convert_cmd = ["afconvert", "-f", "WAVE", "-d", "LEI16@22050", aiff_path, wav_path]
+                subprocess.run(convert_cmd, capture_output=True, timeout=10)
+                
+                # Read and encode the WAV file
+                with open(wav_path, "rb") as f:
+                    audio_data = f.read()
+                
+                audio_b64 = base64.b64encode(audio_data).decode("utf-8")
+                
+                # Clean up temp files
+                os.remove(aiff_path)
+                os.remove(wav_path)
+                
+                return {
+                    "audio": audio_b64,
+                    "format": "wav",
+                    "voice": voice,
+                    "engine": "macos_native"
+                }
+                
+            except subprocess.TimeoutExpired:
+                raise HTTPException(status_code=500, detail="TTS timeout")
+            finally:
+                # Ensure cleanup
+                if os.path.exists(aiff_path):
+                    os.remove(aiff_path)
+        
+        elif system == "Windows":
+            # Use PowerShell with SAPI.SpVoice for Windows TTS
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
+                wav_path = wav_file.name
+            
+            try:
+                # PowerShell script to generate speech and save as WAV
+                # Uses .NET SpeechSynthesizer which outputs WAV directly
+                ps_script = f'''
+Add-Type -AssemblyName System.Speech
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$synth.Rate = 1
+# Try to find a Spanish voice
+$voices = $synth.GetInstalledVoices()
+foreach ($voice in $voices) {{
+    if ($voice.VoiceInfo.Culture.Name -like "es-*") {{
+        $synth.SelectVoice($voice.VoiceInfo.Name)
+        break
+    }}
+}}
+$synth.SetOutputToWaveFile("{wav_path}")
+$synth.Speak("{text.replace('"', '`"').replace("'", "''")}")
+$synth.Dispose()
+'''
+                
+                cmd = ["powershell", "-Command", ps_script]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                
+                if result.returncode != 0:
+                    print(f"PowerShell TTS error: {result.stderr}")
+                    raise HTTPException(status_code=500, detail="TTS generation failed")
+                
+                # Read and encode the WAV file
+                with open(wav_path, "rb") as f:
+                    audio_data = f.read()
+                
+                audio_b64 = base64.b64encode(audio_data).decode("utf-8")
+                
+                return {
+                    "audio": audio_b64,
+                    "format": "wav",
+                    "voice": "Windows Spanish",
+                    "engine": "windows_sapi"
+                }
+                
+            except subprocess.TimeoutExpired:
+                raise HTTPException(status_code=500, detail="TTS timeout")
+            finally:
+                if os.path.exists(wav_path):
+                    os.remove(wav_path)
+        
+        else:
+            # Linux or other - return error to use browser TTS
+            return {
+                "error": "native_tts_unavailable",
+                "message": "Use browser speech synthesis",
+                "engine": None
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"TTS error: {e}")
+        return {
+            "error": "tts_failed",
+            "message": str(e),
+            "engine": None
+        }
+
+@app.get("/tts/voices")
+async def get_available_voices():
+    """
+    Get list of available Spanish TTS voices.
+    """
+    system = platform.system()
+    
+    if system == "Darwin":
+        try:
+            # Get voices from macOS
+            result = subprocess.run(
+                ["say", "-v", "?"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            # Parse Spanish voices
+            spanish_voices = []
+            for line in result.stdout.split("\n"):
+                if "es_" in line or "es-" in line:
+                    # Format: "VoiceName    language    # comment"
+                    parts = line.split()
+                    if parts:
+                        voice_name = parts[0]
+                        spanish_voices.append({
+                            "name": voice_name,
+                            "language": "es",
+                            "engine": "macos_native"
+                        })
+            
+            return {
+                "voices": spanish_voices,
+                "default": "Paulina",
+                "engine": "macos_native"
+            }
+        except Exception as e:
+            print(f"Error getting voices: {e}")
+            return {"voices": [], "engine": None}
+    
+    return {"voices": [], "engine": None}
 
 # --------------------------------------------------------------------
 # Health check

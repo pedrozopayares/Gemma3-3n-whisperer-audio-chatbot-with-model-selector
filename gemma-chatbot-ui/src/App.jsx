@@ -143,13 +143,26 @@ export default function App() {
   const [conversation, setConversation] = useState([]);
   const [error, setError] = useState(null);
   const [isTTSEnabled, setIsTTSEnabled] = useState(true);
+  const [ttsEngine, setTtsEngine] = useState("browser"); // "browser" or "native"
+  
+  // Ref for native TTS audio playback
+  const currentAudioRef = useRef(null);
   
   // Toggle TTS and stop any current speech if disabled
   const toggleTTS = () => {
     const newValue = !isTTSEnabled;
     setIsTTSEnabled(newValue);
-    if (!newValue && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
+    if (!newValue) {
+      // Stop native audio
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        currentAudioRef.current.currentTime = 0;
+        currentAudioRef.current = null;
+      }
+      // Stop browser TTS
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
     }
   };
   
@@ -520,16 +533,40 @@ export default function App() {
       reader.readAsDataURL(blob);
     });
 
+  // Convert frontend conversation to backend history format
+  const getHistoryForBackend = () => {
+    return conversation
+      .filter(msg => {
+        // Only include text messages
+        const textPart = msg.parts?.find(p => p.type === "text" || p.text);
+        return textPart && textPart.text;
+      })
+      .map(msg => {
+        const textPart = msg.parts.find(p => p.type === "text" || p.text);
+        return {
+          role: msg.role,
+          text: textPart.text.replace(/^🎤 "/, '').replace(/"$/, '') // Remove audio emoji prefix
+        };
+      });
+  };
+
   const processAudio = async (audioBlob) => {
     setIsProcessing(true);
     try {
       const b64 = await blobToBase64(audioBlob);
+      // Get history BEFORE adding new message
+      const history = getHistoryForBackend();
       // Initially show as audio, will be updated with transcription
       setConversation((p) => [...p, { role: "user", parts: [{ type: "audio" }] }]);
       const res = await fetch("http://localhost:8000/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data: b64, model: selectedModel, context: chatContext.trim() || null }),
+        body: JSON.stringify({ 
+          data: b64, 
+          model: selectedModel, 
+          context: chatContext.trim() || null,
+          history: history.length > 0 ? history : null
+        }),
       });
       if (!res.ok) {
         const errorText = await res.text();
@@ -573,6 +610,8 @@ export default function App() {
     setTextPrompt("");
     
     try {
+      // Get history BEFORE adding new message
+      const history = getHistoryForBackend();
       setConversation((p) => [
         ...p,
         { role: "user", parts: [{ type: "text", text: userText }] },
@@ -580,7 +619,12 @@ export default function App() {
       const res = await fetch("http://localhost:8000/ask_text", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: userText, model: selectedModel, context: chatContext.trim() || null }),
+        body: JSON.stringify({ 
+          text: userText, 
+          model: selectedModel, 
+          context: chatContext.trim() || null,
+          history: history.length > 0 ? history : null
+        }),
       });
       if (!res.ok) {
         const errorText = await res.text();
@@ -645,48 +689,137 @@ export default function App() {
   };
 
   // ----------------- TTS -----------------
-  const addReply = (text) => {
-    setConversation((p) => [...p, { role: "model", parts: [{ text }] }]);
-    if (isTTSEnabled && "speechSynthesis" in window) {
-      // Clean text for natural speech
-      const cleanText = text
-        // Remove markdown formatting
-        .replace(/\*\*(.+?)\*\*/g, '$1')   // **bold** -> bold
-        .replace(/__(.+?)__/g, '$1')       // __bold__ -> bold
-        .replace(/\*(.+?)\*/g, '$1')       // *italic* -> italic
-        .replace(/_(.+?)_/g, '$1')         // _italic_ -> italic
-        // Remove bullets and list markers
-        .replace(/^[\s]*[-•▪●◦★☆→►▸]\s*/gm, '')  // Remove bullet points at line start
-        .replace(/^[\s]*\d+\.\s+/gm, '')   // Remove numbered list markers (1. 2. etc)
-        // Clean up symbols that TTS might pronounce
-        .replace(/[*_~`#>|]/g, '')         // Remove remaining markdown symbols
-        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')  // [link text](url) -> link text
-        .replace(/```[\s\S]*?```/g, '')    // Remove code blocks
-        .replace(/`([^`]+)`/g, '$1')       // `code` -> code
-        // Improve flow for spoken text
-        .replace(/:\s*$/gm, '. ')          // Colons at end of line -> period
-        .replace(/\n+/g, '. ')             // Line breaks -> pauses
-        .replace(/\s+/g, ' ')              // Multiple spaces -> single
-        .replace(/\.+/g, '.')              // Multiple periods -> single
-        .replace(/,\s*\./g, '.')           // ", ." -> "."
-        .replace(/\.\s*,/g, '.')           // ". ," -> "."
-        .trim();
+  // Clean text for TTS (remove emojis, markdown, etc.)
+  const cleanTextForTTS = (text) => {
+    return text
+      // Remove emojis and emoticons
+      .replace(/[\u{1F600}-\u{1F64F}]/gu, '')  // Emoticons
+      .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')  // Symbols & pictographs
+      .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')  // Transport & map symbols
+      .replace(/[\u{1F1E0}-\u{1F1FF}]/gu, '')  // Flags
+      .replace(/[\u{2600}-\u{26FF}]/gu, '')   // Misc symbols
+      .replace(/[\u{2700}-\u{27BF}]/gu, '')   // Dingbats
+      .replace(/[\u{1F900}-\u{1F9FF}]/gu, '')  // Supplemental symbols
+      .replace(/[\u{1FA00}-\u{1FA6F}]/gu, '')  // Chess symbols
+      .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '')  // Symbols extended-A
+      .replace(/[\u{231A}-\u{231B}]/gu, '')   // Watch, hourglass
+      .replace(/[\u{23E9}-\u{23F3}]/gu, '')   // Media control symbols
+      .replace(/[\u{23F8}-\u{23FA}]/gu, '')   // Media control symbols
+      .replace(/[\u{25AA}-\u{25AB}]/gu, '')   // Squares
+      .replace(/[\u{25B6}]/gu, '')            // Play button
+      .replace(/[\u{25C0}]/gu, '')            // Reverse button
+      .replace(/[\u{25FB}-\u{25FE}]/gu, '')   // Squares
+      .replace(/[\u{2934}-\u{2935}]/gu, '')   // Arrows
+      .replace(/[\u{2B05}-\u{2B07}]/gu, '')   // Arrows
+      .replace(/[\u{2B1B}-\u{2B1C}]/gu, '')   // Squares
+      .replace(/[\u{2B50}]/gu, '')            // Star
+      .replace(/[\u{2B55}]/gu, '')            // Circle
+      .replace(/[\u{3030}]/gu, '')            // Wavy dash
+      .replace(/[\u{303D}]/gu, '')            // Part alternation mark
+      .replace(/[\u{3297}]/gu, '')            // Circled ideograph
+      .replace(/[\u{3299}]/gu, '')            // Circled ideograph
+      // Remove markdown formatting
+      .replace(/\*\*(.+?)\*\*/g, '$1')   // **bold** -> bold
+      .replace(/__(.+?)__/g, '$1')       // __bold__ -> bold
+      .replace(/\*(.+?)\*/g, '$1')       // *italic* -> italic
+      .replace(/_(.+?)_/g, '$1')         // _italic_ -> italic
+      // Remove bullets and list markers
+      .replace(/^[\s]*[-•▪●◦★☆→►▸]\s*/gm, '')  // Remove bullet points at line start
+      .replace(/^[\s]*\d+\.\s+/gm, '')   // Remove numbered list markers (1. 2. etc)
+      // Clean up symbols that TTS might pronounce
+      .replace(/[*_~`#>|]/g, '')         // Remove remaining markdown symbols
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')  // [link text](url) -> link text
+      .replace(/```[\s\S]*?```/g, '')    // Remove code blocks
+      .replace(/`([^`]+)`/g, '$1')       // `code` -> code
+      // Improve flow for spoken text
+      .replace(/:\s*$/gm, '. ')          // Colons at end of line -> period
+      .replace(/\n+/g, '. ')             // Line breaks -> pauses
+      .replace(/\s+/g, ' ')              // Multiple spaces -> single
+      .replace(/\.+/g, '.')              // Multiple periods -> single
+      .replace(/,\s*\./g, '.')           // ", ." -> "."
+      .replace(/\.\s*,/g, '.')           // ". ," -> "."
+      .trim();
+  };
+
+  // Fallback to browser speechSynthesis
+  const speakWithBrowserTTS = (cleanText) => {
+    if (!("speechSynthesis" in window)) return;
+    
+    const utter = new SpeechSynthesisUtterance(cleanText);
+    utter.lang = "es-MX";
+    utter.rate = 1.0;
+    utter.pitch = 1.0;
+    
+    // Try to find a Spanish voice
+    const voices = window.speechSynthesis.getVoices();
+    const spanishVoice = voices.find(v => v.lang.startsWith("es")) || 
+                         voices.find(v => v.lang.includes("ES") || v.lang.includes("MX"));
+    if (spanishVoice) {
+      utter.voice = spanishVoice;
+    }
+    
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utter);
+  };
+
+  // Native TTS using backend (macOS native voices)
+  const speakWithNativeTTS = async (cleanText) => {
+    try {
+      const res = await fetch("http://localhost:8000/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: cleanText, voice: "Paulina", rate: 180 }),
+      });
       
-      const utter = new SpeechSynthesisUtterance(cleanText);
-      utter.lang = "es-MX";
-      utter.rate = 1.0;
-      utter.pitch = 1.0;
-      
-      // Try to find a Spanish voice
-      const voices = window.speechSynthesis.getVoices();
-      const spanishVoice = voices.find(v => v.lang.startsWith("es")) || 
-                           voices.find(v => v.lang.includes("ES") || v.lang.includes("MX"));
-      if (spanishVoice) {
-        utter.voice = spanishVoice;
+      if (!res.ok) {
+        throw new Error("TTS request failed");
       }
       
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(utter);
+      const data = await res.json();
+      
+      // Check if native TTS is available
+      if (data.error || !data.audio) {
+        console.log("Native TTS unavailable, using browser fallback");
+        speakWithBrowserTTS(cleanText);
+        return;
+      }
+      
+      // Play the audio
+      const audioData = `data:audio/wav;base64,${data.audio}`;
+      const audio = new Audio(audioData);
+      currentAudioRef.current = audio;
+      
+      audio.onended = () => {
+        currentAudioRef.current = null;
+      };
+      
+      audio.onerror = () => {
+        console.log("Audio playback error, using browser fallback");
+        currentAudioRef.current = null;
+        speakWithBrowserTTS(cleanText);
+      };
+      
+      await audio.play();
+      console.log(`Playing TTS with ${data.engine} voice: ${data.voice}`);
+      
+    } catch (e) {
+      console.log("Native TTS error, using browser fallback:", e.message);
+      speakWithBrowserTTS(cleanText);
+    }
+  };
+
+  const addReply = (text) => {
+    setConversation((p) => [...p, { role: "model", parts: [{ text }] }]);
+    
+    if (isTTSEnabled) {
+      const cleanText = cleanTextForTTS(text);
+      if (ttsEngine === "native") {
+        // System TTS (macOS/Windows/Android native voices via backend)
+        speakWithNativeTTS(cleanText);
+      } else {
+        // Browser TTS (Web Speech API)
+        speakWithBrowserTTS(cleanText);
+      }
     }
   };
 
@@ -701,10 +834,22 @@ export default function App() {
       <header className="p-4 border-b border-gray-700/50 bg-gray-900/80">
         <div className="flex justify-between items-center">
           <h1 className="text-lg font-bold">Gemma Voice Assistant</h1>
-          <label className="flex items-center space-x-2">
-            <span className="text-sm">TTS</span>
-            <input type="checkbox" checked={isTTSEnabled} onChange={toggleTTS} />
-          </label>
+          <div className="flex items-center space-x-3">
+            <label className="flex items-center space-x-2">
+              <span className="text-sm">TTS</span>
+              <input type="checkbox" checked={isTTSEnabled} onChange={toggleTTS} />
+            </label>
+            {isTTSEnabled && (
+              <select
+                value={ttsEngine}
+                onChange={(e) => setTtsEngine(e.target.value)}
+                className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 focus:outline-none focus:border-indigo-500"
+              >
+                <option value="browser">Audio del navegador</option>
+                <option value="native">Audio del sistema</option>
+              </select>
+            )}
+          </div>
         </div>
         {/* Model selector */}
         <div className="mt-2 flex items-center space-x-2">
