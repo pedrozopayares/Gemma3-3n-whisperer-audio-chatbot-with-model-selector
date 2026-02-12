@@ -101,7 +101,7 @@ AVAILABLE_MODELS = {
     },
 }
 
-DEFAULT_MODEL = "gemma-3n-e2b-it"
+DEFAULT_MODEL = "gemma-3-1b-it"
 
 # --------------------------------------------------------------------
 # Global models (loaded lazily)
@@ -154,9 +154,10 @@ def get_gemma_model_and_processor(model_key: str = None):
             torch_dtype=torch.float32,
         )
     elif family == "gemma3":
-        from transformers import AutoProcessor, Gemma3ForConditionalGeneration
-        processor = AutoProcessor.from_pretrained(model_id)
-        model = Gemma3ForConditionalGeneration.from_pretrained(
+        # Gemma 3 text-only models use AutoTokenizer, not AutoProcessor
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+        processor = AutoTokenizer.from_pretrained(model_id)
+        model = AutoModelForCausalLM.from_pretrained(
             model_id,
             device_map="cpu",
             torch_dtype=torch.float32,
@@ -261,6 +262,15 @@ async def clear_model_cache():
 class AudioPayload(BaseModel):
     data: str  # base-64 WAV data
     model: str = None  # optional model key
+    context: str = None  # optional context for the chat
+
+
+def build_system_prompt(context: str = None) -> str:
+    """Build system prompt with optional user context."""
+    base_prompt = "Eres un asistente amigable y útil. Responde en español de forma concisa."
+    if context:
+        return f"{base_prompt}\n\nContexto adicional: {context}"
+    return base_prompt
 
 
 @app.post("/ask")
@@ -305,12 +315,16 @@ async def ask_audio(payload: AudioPayload):
         model_family = AVAILABLE_MODELS[model_key]["family"]
         
         print(f"Sending to Gemma: '{user_text}'")
+        if payload.context:
+            print(f"With context: '{payload.context[:100]}...'" if len(payload.context) > 100 else f"With context: '{payload.context}'")
+        
+        system_prompt = build_system_prompt(payload.context)
         
         # Different handling for Gemma 2 (tokenizer) vs Gemma 3/3n (processor)
         if model_family == "gemma2":
             # Gemma 2 uses simple chat template
             messages = [
-                {"role": "user", "content": f"Eres un asistente amigable. Responde en español de forma concisa.\n\n{user_text}"}
+                {"role": "user", "content": f"{system_prompt}\n\n{user_text}"}
             ]
             inputs = processor.apply_chat_template(
                 messages,
@@ -323,7 +337,7 @@ async def ask_audio(payload: AudioPayload):
             messages = [
                 {
                     "role": "system",
-                    "content": [{"type": "text", "text": "Eres un asistente amigable y útil. Responde en español de forma concisa."}],
+                    "content": [{"type": "text", "text": system_prompt}],
                 },
                 {
                     "role": "user",
@@ -379,6 +393,112 @@ async def ask_audio(payload: AudioPayload):
 
 
 # --------------------------------------------------------------------
+# /ask_text  — text prompt → gemma → text (bypasses Whisper)
+# --------------------------------------------------------------------
+
+class TextPayload(BaseModel):
+    text: str  # user's text prompt
+    model: str = None  # optional model key
+    context: str = None  # optional context for the chat
+
+
+@app.post("/ask_text")
+async def ask_text(payload: TextPayload):
+    """
+    Process text directly: sends to Gemma without Whisper.
+    """
+    try:
+        print("\n" + "=" * 60)
+        print("Received text request")
+        
+        user_text = payload.text.strip()
+        print(f"User text: '{user_text}'")
+        
+        if not user_text:
+            return {"text": "No recibí ningún texto. ¿Puedes intentarlo de nuevo?"}
+        
+        # Generate response with Gemma
+        model_key = payload.model or DEFAULT_MODEL
+        print(f"\n--- Gemma Response (model: {model_key}) ---")
+        model, processor = get_gemma_model_and_processor(model_key)
+        model_family = AVAILABLE_MODELS[model_key]["family"]
+        
+        print(f"Sending to Gemma: '{user_text}'")
+        if payload.context:
+            print(f"With context: '{payload.context[:100]}...'" if len(payload.context) > 100 else f"With context: '{payload.context}'")
+        
+        system_prompt = build_system_prompt(payload.context)
+        
+        # Different handling for Gemma 2 (tokenizer) vs Gemma 3/3n (processor)
+        if model_family == "gemma2":
+            # Gemma 2 uses simple chat template
+            messages = [
+                {"role": "user", "content": f"{system_prompt}\n\n{user_text}"}
+            ]
+            inputs = processor.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            ).to(model.device)
+            input_ids = inputs
+        else:
+            # Gemma 3 and 3n use processor with structured content
+            messages = [
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": user_text}],
+                },
+            ]
+            inputs = processor.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            ).to(model.device)
+            input_ids = inputs["input_ids"]
+        
+        print("Generating response...")
+        with torch.inference_mode():
+            if model_family == "gemma2":
+                outputs = model.generate(
+                    input_ids,
+                    max_new_tokens=256,
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.9,
+                )
+            else:
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=256,
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.9,
+                )
+        
+        # Decode only the generated part
+        input_len = input_ids.shape[-1]
+        response = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
+        response = response.strip()
+        
+        print(f"Gemma response: '{response}'")
+        print("=" * 60 + "\n")
+        
+        return {"text": response, "model": current_model_key}
+    
+    except Exception as exc:
+        import traceback
+        error_msg = f"Error: {str(exc)}\n{traceback.format_exc()}"
+        print(error_msg)
+        raise HTTPException(500, error_msg) from exc
+
+
+# --------------------------------------------------------------------
 # /ask_image  — multipart(form-data)  →  text
 # --------------------------------------------------------------------
 
@@ -386,11 +506,14 @@ async def ask_audio(payload: AudioPayload):
 async def ask_image(
     prompt: str = Form(...),
     image: UploadFile = File(...),
+    context: str = Form(None),
 ):
     """Process image with text prompt using Gemma3n vision."""
     img_path = None
     try:
         print(f"\nReceived image request with prompt: {prompt}")
+        if context:
+            print(f"With context: '{context[:100]}...'" if len(context) > 100 else f"With context: '{context}'")
         
         suffix = os.path.splitext(image.filename)[1] or ".png"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -400,10 +523,12 @@ async def ask_image(
         
         model, processor = get_gemma_model_and_processor()
         
+        system_prompt = build_system_prompt(context)
+        
         messages = [
             {
                 "role": "system",
-                "content": [{"type": "text", "text": "Eres un asistente amigable."}],
+                "content": [{"type": "text", "text": system_prompt}],
             },
             {
                 "role": "user",

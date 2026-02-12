@@ -22,6 +22,120 @@ const IconLoader = ({ className }) => (
   </svg>
 );
 
+const IconSend = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="22" y1="2" x2="11" y2="13"></line>
+    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+  </svg>
+);
+
+// ----------------- Markdown Renderer -----------------
+const MarkdownText = ({ text }) => {
+  // Parse inline bold: **text** or __text__
+  const parseBold = (str) => {
+    const parts = [];
+    let key = 0;
+    
+    const regex = /\*\*(.+?)\*\*|__(.+?)__/g;
+    let lastIndex = 0;
+    let match;
+    
+    while ((match = regex.exec(str)) !== null) {
+      // Add text before the match
+      if (match.index > lastIndex) {
+        parts.push(str.slice(lastIndex, match.index));
+      }
+      // Add bold text
+      parts.push(<strong key={key++} className="font-semibold">{match[1] || match[2]}</strong>);
+      lastIndex = regex.lastIndex;
+    }
+    // Add remaining text
+    if (lastIndex < str.length) {
+      parts.push(str.slice(lastIndex));
+    }
+    
+    return parts.length > 0 ? parts : str;
+  };
+
+  // Split by lines and process
+  const lines = text.split('\n');
+  const elements = [];
+  let currentList = [];
+  let listType = null; // 'ul' or 'ol'
+  let key = 0;
+
+  const flushList = () => {
+    if (currentList.length > 0) {
+      if (listType === 'ol') {
+        elements.push(
+          <ol key={key++} className="list-decimal list-inside space-y-1 my-2 ml-2">
+            {currentList.map((item, i) => (
+              <li key={i} className="leading-relaxed">{parseBold(item)}</li>
+            ))}
+          </ol>
+        );
+      } else {
+        elements.push(
+          <ul key={key++} className="list-disc list-inside space-y-1 my-2 ml-2">
+            {currentList.map((item, i) => (
+              <li key={i} className="leading-relaxed">{parseBold(item)}</li>
+            ))}
+          </ul>
+        );
+      }
+      currentList = [];
+      listType = null;
+    }
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    
+    // Check for numbered list (1. 2. etc)
+    const numberedMatch = trimmed.match(/^(\d+)\.\s+(.*)/);
+    if (numberedMatch) {
+      if (listType !== 'ol') {
+        flushList();
+        listType = 'ol';
+      }
+      currentList.push(numberedMatch[2]);
+      continue;
+    }
+    
+    // Check for bullet list (* or - or •)
+    const bulletMatch = trimmed.match(/^[*\-•]\s+(.*)/);
+    if (bulletMatch) {
+      if (listType !== 'ul') {
+        flushList();
+        listType = 'ul';
+      }
+      currentList.push(bulletMatch[1]);
+      continue;
+    }
+    
+    // Not a list item - flush any pending list
+    flushList();
+    
+    // Empty line = paragraph break
+    if (!trimmed) {
+      elements.push(<div key={key++} className="h-2" />);
+      continue;
+    }
+    
+    // Regular paragraph
+    elements.push(
+      <p key={key++} className="leading-relaxed">
+        {parseBold(trimmed)}
+      </p>
+    );
+  }
+  
+  // Flush any remaining list
+  flushList();
+  
+  return <div className="space-y-1">{elements}</div>;
+};
+
 // ----------------- Main Component -----------------
 export default function App() {
   const [isRecording, setIsRecording] = useState(false);
@@ -82,9 +196,31 @@ export default function App() {
   const [imagePreview, setImagePreview] = useState(null);
   const [imagePrompt, setImagePrompt] = useState("");
 
+  // text prompt state
+  const [textPrompt, setTextPrompt] = useState("");
+
+  // context state (added to all queries)
+  const [chatContext, setChatContext] = useState("");
+
   // audio recording refs
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const silenceCheckIntervalRef = useRef(null);
+  const maxTimeoutRef = useRef(null);
+  const streamRef = useRef(null);
+  const lastSoundTimeRef = useRef(null);
+  
+  // Recording duration state
+  const [recordingTime, setRecordingTime] = useState(0);
+  const recordingStartTimeRef = useRef(null);
+  const recordingTimerRef = useRef(null);
+  
+  // Recording config
+  const MAX_RECORDING_DURATION = 30000; // 30 seconds max
+  const SILENCE_THRESHOLD = 0.01; // Audio level threshold (0-1)
+  const SILENCE_DURATION = 1500; // 1.5 seconds of silence to stop
 
   // ----------------- AUDIO RECORDING -----------------
   // Target sample rate for Gemma3n (REQUIRED: 16kHz per Google docs)
@@ -266,6 +402,9 @@ export default function App() {
     setError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      
+      // Set up MediaRecorder
       mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
       mediaRecorderRef.current.ondataavailable = (e) => audioChunksRef.current.push(e.data);
@@ -273,21 +412,94 @@ export default function App() {
         const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType });
         const wavBlob = await convertToWav(audioBlob);
         await processAudio(wavBlob);
-        stream.getTracks().forEach((t) => t.stop());
+        streamRef.current?.getTracks().forEach((t) => t.stop());
       };
+      
+      // Set up AudioContext for silence detection
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      analyserRef.current = audioContextRef.current.createAnalyser();
+      analyserRef.current.fftSize = 512;
+      analyserRef.current.smoothingTimeConstant = 0.1;
+      
+      const source = audioContextRef.current.createMediaStreamSource(stream);
+      source.connect(analyserRef.current);
+      
+      // Start recording
       mediaRecorderRef.current.start();
       setIsRecording(true);
-      setTimeout(stopRecording, 4000);
+      setRecordingTime(0);
+      recordingStartTimeRef.current = Date.now();
+      lastSoundTimeRef.current = Date.now();
+      
+      // Update recording time display
+      recordingTimerRef.current = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - recordingStartTimeRef.current) / 1000);
+        setRecordingTime(elapsed);
+      }, 100);
+      
+      // Start silence detection
+      const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+      
+      silenceCheckIntervalRef.current = setInterval(() => {
+        if (!analyserRef.current) return;
+        
+        analyserRef.current.getByteFrequencyData(dataArray);
+        
+        // Calculate average audio level (0-255 -> 0-1)
+        const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255;
+        
+        if (average > SILENCE_THRESHOLD) {
+          // Sound detected, reset silence timer
+          lastSoundTimeRef.current = Date.now();
+        } else {
+          // Check if silence duration exceeded
+          const silenceDuration = Date.now() - lastSoundTimeRef.current;
+          if (silenceDuration >= SILENCE_DURATION) {
+            console.log(`Silence detected for ${silenceDuration}ms, stopping recording`);
+            stopRecording();
+          }
+        }
+      }, 100);
+      
+      // Max duration timeout (30 seconds)
+      maxTimeoutRef.current = setTimeout(() => {
+        console.log("Max recording duration reached (30s)");
+        stopRecording();
+      }, MAX_RECORDING_DURATION);
+      
     } catch (err) {
-      setError("Could not access microphone.");
+      setError("No se pudo acceder al micrófono.");
     }
   };
 
   const stopRecording = () => {
+    // Clear all timers and intervals
+    if (silenceCheckIntervalRef.current) {
+      clearInterval(silenceCheckIntervalRef.current);
+      silenceCheckIntervalRef.current = null;
+    }
+    if (maxTimeoutRef.current) {
+      clearTimeout(maxTimeoutRef.current);
+      maxTimeoutRef.current = null;
+    }
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    
+    // Close audio context
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+      analyserRef.current = null;
+    }
+    
+    // Stop recording
     if (mediaRecorderRef.current?.state === "recording") {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
       setIsProcessing(true);
+      setRecordingTime(0);
     }
   };
 
@@ -308,7 +520,7 @@ export default function App() {
       const res = await fetch("http://localhost:8000/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data: b64, model: selectedModel }),
+        body: JSON.stringify({ data: b64, model: selectedModel, context: chatContext.trim() || null }),
       });
       if (!res.ok) {
         const errorText = await res.text();
@@ -343,6 +555,48 @@ export default function App() {
     }
   };
 
+  // ----------------- TEXT PROMPT (direct to LLM) -----------------
+  const submitTextPrompt = async () => {
+    if (!textPrompt.trim()) return;
+    setIsProcessing(true);
+    setError(null);
+    const userText = textPrompt.trim();
+    setTextPrompt("");
+    
+    try {
+      setConversation((p) => [
+        ...p,
+        { role: "user", parts: [{ type: "text", text: userText }] },
+      ]);
+      const res = await fetch("http://localhost:8000/ask_text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: userText, model: selectedModel, context: chatContext.trim() || null }),
+      });
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error("Server error:", errorText);
+        throw new Error(errorText || `Server error: ${res.status}`);
+      }
+      const data = await res.json();
+      console.log("Received response:", data);
+      const { text } = data;
+      addReply(text);
+    } catch (e) {
+      console.error("Error in submitTextPrompt:", e);
+      setError(`Text error: ${e.message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleTextKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submitTextPrompt();
+    }
+  };
+
   // ----------------- IMAGE + PROMPT -----------------
   const submitImageQuestion = async () => {
     if (!imageFile || !imagePrompt.trim()) return;
@@ -356,6 +610,9 @@ export default function App() {
       const form = new FormData();
       form.append("prompt", imagePrompt);
       form.append("image", imageFile, imageFile.name);
+      if (chatContext.trim()) {
+        form.append("context", chatContext.trim());
+      }
 
       const res = await fetch("http://localhost:8000/ask_image", { method: "POST", body: form });
       if (!res.ok) {
@@ -434,6 +691,29 @@ export default function App() {
             </>
           )}
         </div>
+        
+        {/* Context box */}
+        <div className="mt-3">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-sm text-gray-400">Contexto del chat:</span>
+            {chatContext && (
+              <button
+                onClick={() => setChatContext("")}
+                className="text-xs text-red-400 hover:text-red-300"
+              >
+                Limpiar
+              </button>
+            )}
+          </div>
+          <textarea
+            value={chatContext}
+            onChange={(e) => setChatContext(e.target.value)}
+            placeholder="Ej: Eres un cocinero experto que trabaja con cocina tradicional en el restaurante Yotojoro. Responde de forma técnica y concisa..."
+            className="w-full bg-gray-800 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-indigo-500 resize-none"
+            rows={2}
+            disabled={isProcessing || isRecording}
+          />
+        </div>
       </header>
 
       {/* messages */}
@@ -447,7 +727,7 @@ export default function App() {
 
         {conversation.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-md p-3 rounded-2xl ${msg.role === "user" ? "bg-blue-600" : "bg-gray-700"}`}>
+            <div className={`max-w-lg p-4 rounded-2xl ${msg.role === "user" ? "bg-blue-600" : "bg-gray-700"}`}>
               {msg.parts[0].type === "audio" ? (
                 <p className="italic">Audio message</p>
               ) : msg.parts[0].type === "image" ? (
@@ -455,6 +735,8 @@ export default function App() {
                   <img src={msg.parts[0].url} alt="upload" className="max-w-xs mb-2 rounded-lg" />
                   <p>{msg.parts[1].text}</p>
                 </>
+              ) : msg.role === "model" ? (
+                <MarkdownText text={msg.parts[0].text} />
               ) : (
                 <p>{msg.parts[0].text}</p>
               )}
@@ -508,19 +790,62 @@ export default function App() {
         )}
       </section>
 
-      {/* footer mic button */}
-      <footer className="p-4 flex flex-col items-center">
-        {error && <p className="text-red-400 mb-2">{error}</p>}
-        <button
-          onClick={startRecording}
-          disabled={isRecording || isProcessing}
-          className="w-20 h-20 bg-indigo-600 rounded-full flex items-center justify-center disabled:bg-gray-500"
-        >
-          {isRecording ? <div className="w-8 h-8 bg-red-500 rounded animate-pulse" /> : isProcessing ? <IconLoader className="w-8 h-8 animate-spin" /> : <IconMic className="w-8 h-8" />}
-        </button>
-        <p className="text-xs text-gray-500 mt-2">
-          {isRecording ? "Recording…" : isProcessing ? "Processing…" : "Tap to speak (4 s)"}
-        </p>
+      {/* footer with text input and mic button */}
+      <footer className="p-4 border-t border-gray-700/50">
+        {error && <p className="text-red-400 mb-2 text-center">{error}</p>}
+        
+        {/* Text input row */}
+        <div className="flex items-center gap-2 mb-3">
+          <input
+            type="text"
+            value={textPrompt}
+            onChange={(e) => setTextPrompt(e.target.value)}
+            onKeyDown={handleTextKeyDown}
+            placeholder="Escribe tu mensaje..."
+            disabled={isRecording || isProcessing}
+            className="flex-1 bg-gray-800 text-white px-4 py-3 rounded-full border border-gray-600 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+          />
+          <button
+            onClick={submitTextPrompt}
+            disabled={!textPrompt.trim() || isRecording || isProcessing}
+            className="w-12 h-12 bg-indigo-600 rounded-full flex items-center justify-center disabled:bg-gray-500 hover:bg-indigo-500 transition-colors"
+            title="Enviar mensaje"
+          >
+            <IconSend className="w-5 h-5" />
+          </button>
+        </div>
+        
+        {/* Mic button */}
+        <div className="flex flex-col items-center">
+          <button
+            onClick={isRecording ? stopRecording : startRecording}
+            disabled={isProcessing}
+            className={`w-16 h-16 rounded-full flex items-center justify-center transition-colors ${
+              isRecording 
+                ? "bg-red-600 hover:bg-red-500 animate-pulse" 
+                : isProcessing 
+                  ? "bg-gray-500" 
+                  : "bg-indigo-600 hover:bg-indigo-500"
+            }`}
+          >
+            {isRecording ? (
+              <div className="flex flex-col items-center">
+                <div className="w-6 h-6 bg-white rounded" />
+              </div>
+            ) : isProcessing ? (
+              <IconLoader className="w-6 h-6 animate-spin" />
+            ) : (
+              <IconMic className="w-6 h-6" />
+            )}
+          </button>
+          <p className="text-xs text-gray-500 mt-2">
+            {isRecording 
+              ? `Grabando… ${recordingTime}s (toca para detener)` 
+              : isProcessing 
+                ? "Procesando…" 
+                : "Toca para hablar (máx 30s)"}
+          </p>
+        </div>
       </footer>
     </div>
   );
