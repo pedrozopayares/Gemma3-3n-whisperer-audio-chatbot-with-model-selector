@@ -1,10 +1,8 @@
-# Gemma 3n Multi-Modal Chatbot Starter Kit
+# Based on Gemma 3n Multi-Modal Chatbot Starter Kit but in MacOS
 
-This repository contains the basic code for a multi-modal (voice, image, and text) chatbot application. It features a React-based frontend and a Python-based backend that serves a local Gemma 3n model for inference.
+This repository contains the basic code for a multi-modal (voice, image, and text) chatbot application. It features a React-based frontend and a Python-based backend that serves a local Gemma models for inference.
 
-![Gemma 3n Chatbot Demo](Image.png)
-
-This project is intended as a self-starter kit for developers. The instructions below provide a high-level overview of how to get the application running.
+This project is intended as a self-starter kit for developers tested in Macbook Pro M1 Pro. The instructions below provide a high-level overview of how to get the application running.
 
 ## Project Structure
 
