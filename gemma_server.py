@@ -97,11 +97,73 @@ AVAILABLE_MODELS = {
         "size": "~4.7GB",
         "vision": False,
     },
-    # Phi
+    # Phi family
     "phi3:mini": {
         "name": "Phi-3 Mini",
         "description": "Microsoft Phi-3, compacto",
         "size": "~2.3GB",
+        "vision": False,
+    },
+    "phi4:latest": {
+        "name": "Phi-4 14B",
+        "description": "Microsoft Phi-4, razonamiento avanzado",
+        "size": "~9.1GB",
+        "vision": False,
+    },
+    # Gemma 3 family
+    "gemma3:1b": {
+        "name": "Gemma 3 1B",
+        "description": "Google Gemma 3, ultra ligero",
+        "size": "~815MB",
+        "vision": False,
+    },
+    "gemma3:4b": {
+        "name": "Gemma 3 4B",
+        "description": "Google Gemma 3, balance calidad/tamaño",
+        "size": "~3.3GB",
+        "vision": False,
+    },
+    "gemma3:12b": {
+        "name": "Gemma 3 12B",
+        "description": "Google Gemma 3, alta calidad",
+        "size": "~8.9GB",
+        "vision": False,
+    },
+    "gemma3:27b": {
+        "name": "Gemma 3 27B",
+        "description": "Google Gemma 3, máxima calidad",
+        "size": "~17GB",
+        "vision": False,
+    },
+    # DeepSeek R1 (reasoning model)
+    "deepseek-r1:1.5b": {
+        "name": "DeepSeek R1 1.5B",
+        "description": "DeepSeek R1, razonamiento ligero",
+        "size": "~1.1GB",
+        "vision": False,
+    },
+    "deepseek-r1:7b": {
+        "name": "DeepSeek R1 7B",
+        "description": "DeepSeek R1, razonamiento equilibrado",
+        "size": "~4.7GB",
+        "vision": False,
+    },
+    "deepseek-r1:8b": {
+        "name": "DeepSeek R1 8B",
+        "description": "DeepSeek R1, razonamiento avanzado",
+        "size": "~4.9GB",
+        "vision": False,
+    },
+    "deepseek-r1:14b": {
+        "name": "DeepSeek R1 14B",
+        "description": "DeepSeek R1, alta capacidad",
+        "size": "~9GB",
+        "vision": False,
+    },
+    "deepseek-r1:32b": {
+        "name": "DeepSeek R1 32B",
+        "description": "DeepSeek R1, máximo razonamiento",
+        "size": "~20GB",
         "vision": False,
     },
 }

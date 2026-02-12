@@ -31,6 +31,82 @@ const IconSend = ({ className }) => (
 
 // ----------------- Markdown Renderer -----------------
 const MarkdownText = ({ text }) => {
+  // Convert LaTeX math to readable text
+  const convertLatexToText = (str) => {
+    return str
+      // Handle inline math \(...\) or $...$
+      .replace(/\\\((.+?)\\\)/g, (_, math) => convertLatexMath(math))
+      .replace(/\$(.+?)\$/g, (_, math) => convertLatexMath(math))
+      // Handle display math \[...\] or $$...$$
+      .replace(/\\\[(.+?)\\\]/g, (_, math) => convertLatexMath(math))
+      .replace(/\$\$(.+?)\$\$/g, (_, math) => convertLatexMath(math));
+  };
+
+  const convertLatexMath = (math) => {
+    return math
+      // Operators
+      .replace(/\\times/g, '×')
+      .replace(/\\div/g, '÷')
+      .replace(/\\pm/g, '±')
+      .replace(/\\mp/g, '∓')
+      .replace(/\\cdot/g, '·')
+      .replace(/\\ast/g, '*')
+      .replace(/\\star/g, '★')
+      // Comparisons
+      .replace(/\\leq/g, '≤')
+      .replace(/\\geq/g, '≥')
+      .replace(/\\neq/g, '≠')
+      .replace(/\\approx/g, '≈')
+      .replace(/\\equiv/g, '≡')
+      .replace(/\\lt/g, '<')
+      .replace(/\\gt/g, '>')
+      // Fractions: \frac{a}{b} -> a/b
+      .replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, '($1/$2)')
+      // Square root: \sqrt{x} -> √x
+      .replace(/\\sqrt\{([^}]+)\}/g, '√($1)')
+      .replace(/\\sqrt\s*(\d+)/g, '√$1')
+      // Superscript: x^{2} or x^2 -> x²
+      .replace(/\^{2}/g, '²')
+      .replace(/\^2/g, '²')
+      .replace(/\^{3}/g, '³')
+      .replace(/\^3/g, '³')
+      .replace(/\^\{([^}]+)\}/g, '^($1)')
+      // Subscript: x_{i} -> x_i (just clean up braces)
+      .replace(/_\{([^}]+)\}/g, '_$1')
+      // Greek letters
+      .replace(/\\alpha/g, 'α')
+      .replace(/\\beta/g, 'β')
+      .replace(/\\gamma/g, 'γ')
+      .replace(/\\delta/g, 'δ')
+      .replace(/\\epsilon/g, 'ε')
+      .replace(/\\pi/g, 'π')
+      .replace(/\\theta/g, 'θ')
+      .replace(/\\lambda/g, 'λ')
+      .replace(/\\mu/g, 'μ')
+      .replace(/\\sigma/g, 'σ')
+      .replace(/\\omega/g, 'ω')
+      .replace(/\\sum/g, 'Σ')
+      .replace(/\\prod/g, 'Π')
+      // Arrows
+      .replace(/\\rightarrow/g, '→')
+      .replace(/\\leftarrow/g, '←')
+      .replace(/\\Rightarrow/g, '⇒')
+      .replace(/\\Leftarrow/g, '⇐')
+      // Misc
+      .replace(/\\infty/g, '∞')
+      .replace(/\\partial/g, '∂')
+      .replace(/\\nabla/g, '∇')
+      .replace(/\\therefore/g, '∴')
+      .replace(/\\because/g, '∵')
+      // Clean up remaining LaTeX commands
+      .replace(/\\text\{([^}]+)\}/g, '$1')
+      .replace(/\\mathrm\{([^}]+)\}/g, '$1')
+      .replace(/\\mathbf\{([^}]+)\}/g, '$1')
+      .replace(/\{/g, '')
+      .replace(/\}/g, '')
+      .trim();
+  };
+
   // Parse inline bold: **text** or __text__
   const parseBold = (str) => {
     const parts = [];
@@ -57,8 +133,11 @@ const MarkdownText = ({ text }) => {
     return parts.length > 0 ? parts : str;
   };
 
+  // Convert LaTeX to readable text before processing
+  const processedText = convertLatexToText(text);
+  
   // Split by lines and process
-  const lines = text.split('\n');
+  const lines = processedText.split('\n');
   const elements = [];
   let currentList = [];
   let listType = null; // 'ul' or 'ol'
