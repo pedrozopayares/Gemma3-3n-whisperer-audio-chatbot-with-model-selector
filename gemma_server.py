@@ -172,6 +172,24 @@ DEFAULT_MODEL = "gemma2:2b"
 DEFAULT_VISION_MODEL = "llava:7b"
 
 # --------------------------------------------------------------------
+# Smart Routing Configuration
+# --------------------------------------------------------------------
+ROUTER_MODEL = "qwen2.5:0.5b"  # Ultra-fast model for classification
+
+# Model routing map: category -> model
+ROUTE_MODELS = {
+    "math": "phi4:latest",      # Mathematical operations, calculations, proportions
+    "chat": "gemma3:4b",        # Conversational, general knowledge, information
+}
+
+ROUTER_PROMPT = """Clasifica la siguiente consulta. Responde SOLO con una palabra:
+- "math" si requiere cálculos, operaciones matemáticas, conversiones, proporciones, cantidades, medidas, porcentajes
+- "chat" si es conversacional, información general, preguntas simples, saludos, definiciones
+
+Consulta: {query}
+Clasificación:"""
+
+# --------------------------------------------------------------------
 # Global Whisper model (loaded lazily)
 # --------------------------------------------------------------------
 whisper_model = None
@@ -300,6 +318,59 @@ async def ollama_generate_with_image(
         return data.get("response", "").strip()
 
 
+async def route_query(query: str) -> tuple[str, str]:
+    """
+    Use a small model to classify the query and route to appropriate model.
+    
+    Args:
+        query: User's query text
+    
+    Returns:
+        Tuple of (selected_model, category)
+    """
+    try:
+        prompt = ROUTER_PROMPT.format(query=query)
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model": ROUTER_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0,  # Deterministic for classification
+                        "num_predict": 10,  # Only need one word
+                    }
+                },
+                timeout=30.0,
+            )
+            
+            if response.status_code != 200:
+                print(f"Router error, using default: {response.text}")
+                return DEFAULT_MODEL, "default"
+            
+            data = response.json()
+            category = data.get("response", "").strip().lower()
+            
+            # Extract just the category word
+            if "math" in category:
+                category = "math"
+            elif "chat" in category:
+                category = "chat"
+            else:
+                category = "chat"  # Default to chat if unclear
+            
+            selected_model = ROUTE_MODELS.get(category, DEFAULT_MODEL)
+            print(f"🔀 Router: '{query[:50]}...' → {category} → {selected_model}")
+            
+            return selected_model, category
+            
+    except Exception as e:
+        print(f"Router exception: {e}, using default model")
+        return DEFAULT_MODEL, "default"
+
+
 # --------------------------------------------------------------------
 # FastAPI + CORS
 # --------------------------------------------------------------------
@@ -377,7 +448,18 @@ async def list_models():
     """Return list of available Ollama models."""
     installed = await get_installed_models()
     
-    models = []
+    # Add "auto" option first for smart routing
+    models = [{
+        "key": "auto",
+        "name": "🔀 Auto (Smart Routing)",
+        "description": f"Routing automático: math→{ROUTE_MODELS['math']}, chat→{ROUTE_MODELS['chat']}",
+        "size": "~0",
+        "family": "router",
+        "vision": False,
+        "loaded": ROUTER_MODEL.split(":")[0] in " ".join(installed),
+        "current": False,
+    }]
+    
     for key, info in AVAILABLE_MODELS.items():
         # Check if model name matches any installed model
         is_loaded = any(key in m or m.startswith(key.split(":")[0]) for m in installed)
@@ -395,9 +477,11 @@ async def list_models():
     
     return {
         "models": models,
-        "default": DEFAULT_MODEL,
+        "default": "auto",  # Default to auto routing
         "current": None,
         "installed": installed,
+        "router_model": ROUTER_MODEL,
+        "route_models": ROUTE_MODELS,
     }
 
 
@@ -526,8 +610,15 @@ async def ask_audio(payload: AudioPayload):
             return {"text": "No pude entender lo que dijiste. ¿Puedes repetirlo?"}
         
         # Step 2: Generate response with Ollama
-        model = payload.model or DEFAULT_MODEL
-        print(f"\n--- STEP 2: Ollama Response (model: {model}) ---")
+        model = payload.model or "auto"
+        routed_category = None
+        
+        # Smart routing: auto-select model based on query type
+        if model == "auto":
+            model, routed_category = await route_query(user_text)
+            print(f"\n--- STEP 2: Auto-routed to {model} ({routed_category}) ---")
+        else:
+            print(f"\n--- STEP 2: Ollama Response (model: {model}) ---")
         
         if payload.context:
             ctx_preview = payload.context[:100] + '...' if len(payload.context) > 100 else payload.context
@@ -546,7 +637,10 @@ async def ask_audio(payload: AudioPayload):
         print(f"Ollama response: '{response}'")
         print("=" * 60 + "\n")
         
-        return {"text": response, "transcription": user_text, "model": model}
+        result = {"text": response, "transcription": user_text, "model": model}
+        if routed_category:
+            result["routed_category"] = routed_category
+        return result
     
     except Exception as exc:
         import traceback
@@ -582,8 +676,15 @@ async def ask_text(payload: TextPayload):
         if not user_text:
             return {"text": "No recibí ningún texto. ¿Puedes intentarlo de nuevo?"}
         
-        model = payload.model or DEFAULT_MODEL
-        print(f"\n--- Ollama Response (model: {model}) ---")
+        model = payload.model or "auto"
+        routed_category = None
+        
+        # Smart routing: auto-select model based on query type
+        if model == "auto":
+            model, routed_category = await route_query(user_text)
+            print(f"\n--- Auto-routed to {model} ({routed_category}) ---")
+        else:
+            print(f"\n--- Ollama Response (model: {model}) ---")
         
         if payload.context:
             ctx_preview = payload.context[:100] + '...' if len(payload.context) > 100 else payload.context
@@ -602,7 +703,10 @@ async def ask_text(payload: TextPayload):
         print(f"Ollama response: '{response}'")
         print("=" * 60 + "\n")
         
-        return {"text": response, "model": model}
+        result = {"text": response, "model": model}
+        if routed_category:
+            result["routed_category"] = routed_category
+        return result
     
     except Exception as exc:
         import traceback

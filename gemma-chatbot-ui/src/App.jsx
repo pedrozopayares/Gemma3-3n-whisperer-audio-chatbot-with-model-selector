@@ -29,6 +29,13 @@ const IconSend = ({ className }) => (
   </svg>
 );
 
+const IconResend = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M1 4v6h6"></path>
+    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+  </svg>
+);
+
 // ----------------- Markdown Renderer -----------------
 const MarkdownText = ({ text }) => {
   // Convert LaTeX math to readable text
@@ -660,7 +667,7 @@ export default function App() {
       }
       const data = await res.json();
       console.log("Received response:", data);
-      const { text, transcription } = data;
+      const { text, transcription, model, routed_category } = data;
       
       // Update the last user message to show transcription instead of "Audio message"
       if (transcription) {
@@ -677,7 +684,7 @@ export default function App() {
         });
       }
       
-      addReply(text);
+      addReply(text, routed_category ? { model, category: routed_category } : null);
     } catch (e) {
       console.error("Error in processAudio:", e);
       setError(`Audio error: ${e.message}`);
@@ -718,8 +725,8 @@ export default function App() {
       }
       const data = await res.json();
       console.log("Received response:", data);
-      const { text } = data;
-      addReply(text);
+      const { text, model, routed_category } = data;
+      addReply(text, routed_category ? { model, category: routed_category } : null);
     } catch (e) {
       console.error("Error in submitTextPrompt:", e);
       setError(`Text error: ${e.message}`);
@@ -732,6 +739,73 @@ export default function App() {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submitTextPrompt();
+    }
+  };
+
+  // ----------------- RESEND MESSAGE -----------------
+  const resendMessage = async (messageIndex) => {
+    const msg = conversation[messageIndex];
+    if (!msg || msg.role !== "user") return;
+    
+    // Get the text from the message
+    const textPart = msg.parts?.find(p => p.type === "text" || p.text);
+    if (!textPart?.text) return;
+    
+    // Clean the text (remove audio emoji prefix if present)
+    let userText = textPart.text.replace(/^🎤 "/, '').replace(/"$/, '');
+    
+    setIsProcessing(true);
+    setError(null);
+    
+    try {
+      // Build history from messages BEFORE the one being resent
+      const historyBefore = conversation
+        .slice(0, messageIndex)
+        .filter(m => {
+          const tp = m.parts?.find(p => p.type === "text" || p.text);
+          return tp && tp.text;
+        })
+        .map(m => {
+          const tp = m.parts.find(p => p.type === "text" || p.text);
+          return {
+            role: m.role,
+            text: tp.text.replace(/^🎤 "/, '').replace(/"$/, '')
+          };
+        });
+      
+      // Remove the old response(s) after this message and re-add the user message
+      setConversation(prev => {
+        const updated = prev.slice(0, messageIndex);
+        updated.push({ role: "user", parts: [{ type: "text", text: userText }] });
+        return updated;
+      });
+      
+      const res = await fetch("http://localhost:8000/ask_text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          text: userText, 
+          model: selectedModel, 
+          context: chatContext.trim() || null,
+          history: historyBefore.length > 0 ? historyBefore : null
+        }),
+      });
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error("Server error:", errorText);
+        throw new Error(errorText || `Server error: ${res.status}`);
+      }
+      
+      const data = await res.json();
+      console.log("Resend response:", data);
+      const { text, model, routed_category } = data;
+      addReply(text, routed_category ? { model, category: routed_category } : null);
+    } catch (e) {
+      console.error("Error in resendMessage:", e);
+      setError(`Resend error: ${e.message}`);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -950,8 +1024,8 @@ export default function App() {
     }
   };
 
-  const addReply = (text) => {
-    setConversation((p) => [...p, { role: "model", parts: [{ text }] }]);
+  const addReply = (text, modelInfo = null) => {
+    setConversation((p) => [...p, { role: "model", parts: [{ text }], modelInfo }]);
     
     if (isTTSEnabled) {
       const cleanText = cleanTextForTTS(text);
@@ -1059,7 +1133,7 @@ export default function App() {
 
         {conversation.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-lg p-4 rounded-2xl ${msg.role === "user" ? "bg-blue-600" : "bg-gray-700"}`}>
+            <div className={`group relative max-w-lg p-4 rounded-2xl ${msg.role === "user" ? "bg-blue-600" : "bg-gray-700"}`}>
               {msg.parts[0].type === "audio" ? (
                 <p className="italic">Audio message</p>
               ) : msg.parts[0].type === "image" ? (
@@ -1068,9 +1142,27 @@ export default function App() {
                   <p>{msg.parts[1].text}</p>
                 </>
               ) : msg.role === "model" ? (
-                <MarkdownText text={msg.parts[0].text} />
+                <>
+                  <MarkdownText text={msg.parts[0].text} />
+                  {msg.modelInfo && (
+                    <p className="text-xs text-gray-400 mt-2 pt-2 border-t border-gray-600">
+                      Auto: {msg.modelInfo.model} ({msg.modelInfo.category})
+                    </p>
+                  )}
+                </>
               ) : (
-                <p>{msg.parts[0].text}</p>
+                <>
+                  <p>{msg.parts[0].text}</p>
+                  {/* Resend button for user text messages */}
+                  <button
+                    onClick={() => resendMessage(i)}
+                    disabled={isProcessing || isRecording}
+                    className="absolute -left-8 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 bg-gray-700 hover:bg-gray-600 rounded-full disabled:opacity-30"
+                    title="Reenviar mensaje"
+                  >
+                    <IconResend className="w-4 h-4" />
+                  </button>
+                </>
               )}
             </div>
           </div>
