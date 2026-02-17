@@ -28,6 +28,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 
+# RAG imports
+try:
+    from rag_module import RAGSystem, build_rag_prompt, load_index
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
+    print("⚠️  RAG module not available. Install with: pip install chromadb")
+
 # Fix SSL issues for model downloads
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -213,6 +221,80 @@ SUMMARY_PROMPT = """Resume la siguiente conversación en 2-3 oraciones cortas, m
 {conversation}
 
 Resumen:"""
+
+# --------------------------------------------------------------------
+# RAG Configuration
+# --------------------------------------------------------------------
+# Enable/disable RAG system
+RAG_ENABLED = True
+
+# Number of documents to retrieve for context
+RAG_TOP_K = 3
+
+# Minimum relevance score (0-1, higher = more strict)
+RAG_MIN_RELEVANCE = 0.3
+
+# RAG system instance (loaded lazily)
+_rag_system = None
+
+
+def get_rag_system() -> Optional["RAGSystem"]:
+    """Get or initialize the RAG system."""
+    global _rag_system
+    if not RAG_ENABLED or not RAG_AVAILABLE:
+        return None
+    if _rag_system is None:
+        try:
+            _rag_system = RAGSystem()
+            print("📚 RAG system initialized")
+        except Exception as e:
+            print(f"⚠️  RAG initialization failed: {e}")
+            return None
+    return _rag_system
+
+
+async def search_rag_context(query: str) -> tuple[str, List[Dict]]:
+    """
+    Search RAG for relevant context.
+    
+    Args:
+        query: User's question
+    
+    Returns:
+        Tuple of (formatted_context, raw_results)
+    """
+    rag = get_rag_system()
+    if not rag:
+        return "", []
+    
+    try:
+        results = rag.search(query, n_results=RAG_TOP_K)
+        
+        # Filter by relevance
+        relevant = [r for r in results if r.get("relevance", 0) >= RAG_MIN_RELEVANCE]
+        
+        if not relevant:
+            return "", []
+        
+        # Format context for prompt
+        context_parts = []
+        for doc in relevant:
+            source = doc.get("metadata", {}).get("source", "Documento")
+            section = doc.get("metadata", {}).get("section", "")
+            relevance = doc.get("relevance", 0) * 100
+            
+            header = f"[{source}]" + (f" - {section}" if section else "")
+            context_parts.append(f"### {header} (relevancia: {relevance:.0f}%)\n{doc['content']}")
+        
+        formatted = "\n\n".join(context_parts)
+        print(f"📚 RAG: Found {len(relevant)} relevant documents for: '{query[:50]}...'")
+        
+        return formatted, relevant
+    
+    except Exception as e:
+        print(f"⚠️  RAG search error: {e}")
+        return "", []
+
 
 # --------------------------------------------------------------------
 # Global Whisper model (loaded lazily)
@@ -554,10 +636,24 @@ async def manage_context(
     return recent_messages, summary
 
 
-def build_system_prompt(user_context: str = None, context_summary: str = None) -> str:
-    """Build system prompt combining internal context with optional user context and summary."""
+def build_system_prompt(
+    user_context: str = None,
+    context_summary: str = None,
+    rag_context: str = None
+) -> str:
+    """Build system prompt combining internal context with optional user context, summary, and RAG context."""
     # INTERNAL_CONTEXT es el prompt base principal
     system_prompt = INTERNAL_CONTEXT if INTERNAL_CONTEXT else "Eres un asistente amigable y útil. Responde en español de forma concisa."
+    
+    # Agregar contexto RAG (documentos relevantes de la base de conocimiento)
+    if rag_context:
+        system_prompt = f"""{system_prompt}
+
+## Base de Conocimiento
+Usa la siguiente información de nuestra base de conocimiento para responder. Si la respuesta no está en estos documentos, puedes usar tu conocimiento general pero menciona que no encontraste información específica.
+
+{rag_context}
+"""
     
     # Agregar resumen de conversación anterior si hay
     if context_summary:
@@ -802,7 +898,10 @@ async def ask_audio(payload: AudioPayload):
                 preview = msg['text'][:80] + '...' if len(msg['text']) > 80 else msg['text']
                 print(f"  [{i+1}] {msg['role']}: {preview}")
         
-        system_prompt = build_system_prompt(payload.context, context_summary)
+        # Search RAG for relevant context
+        rag_context, rag_results = await search_rag_context(user_text)
+        
+        system_prompt = build_system_prompt(payload.context, context_summary, rag_context)
         messages = build_ollama_messages(system_prompt, user_text, managed_history)
         
         response = await ollama_chat(model, messages)
@@ -812,6 +911,8 @@ async def ask_audio(payload: AudioPayload):
         result = {"text": response, "transcription": user_text, "model": model}
         if routed_category:
             result["routed_category"] = routed_category
+        if rag_results:
+            result["rag_sources"] = [r.get("metadata", {}).get("source", "") for r in rag_results]
         return result
     
     except Exception as exc:
@@ -879,7 +980,10 @@ async def ask_text(payload: TextPayload):
                 preview = msg['text'][:80] + '...' if len(msg['text']) > 80 else msg['text']
                 print(f"  [{i+1}] {msg['role']}: {preview}")
         
-        system_prompt = build_system_prompt(payload.context, context_summary)
+        # Search RAG for relevant context
+        rag_context, rag_results = await search_rag_context(user_text)
+        
+        system_prompt = build_system_prompt(payload.context, context_summary, rag_context)
         messages = build_ollama_messages(system_prompt, user_text, managed_history)
         
         response = await ollama_chat(model, messages)
@@ -889,6 +993,8 @@ async def ask_text(payload: TextPayload):
         result = {"text": response, "model": model}
         if routed_category:
             result["routed_category"] = routed_category
+        if rag_results:
+            result["rag_sources"] = [r.get("metadata", {}).get("source", "") for r in rag_results]
         return result
     
     except Exception as exc:
@@ -1106,6 +1212,124 @@ async def get_available_voices():
             return {"voices": [], "engine": None}
     
     return {"voices": [], "engine": None}
+
+
+# --------------------------------------------------------------------
+# RAG Admin Endpoints
+# --------------------------------------------------------------------
+
+@app.get("/rag/status")
+async def rag_status():
+    """Get RAG system status and statistics."""
+    if not RAG_AVAILABLE:
+        return {
+            "enabled": False,
+            "available": False,
+            "message": "RAG module not installed. Run: pip install chromadb"
+        }
+    
+    if not RAG_ENABLED:
+        return {
+            "enabled": False,
+            "available": True,
+            "message": "RAG is disabled in configuration"
+        }
+    
+    rag = get_rag_system()
+    if not rag:
+        return {
+            "enabled": True,
+            "available": True,
+            "initialized": False,
+            "message": "RAG system failed to initialize"
+        }
+    
+    stats = rag.get_stats()
+    index = load_index()
+    
+    return {
+        "enabled": True,
+        "available": True,
+        "initialized": True,
+        "documents": len(index.get("files", {})),
+        "chunks": stats.get("total_documents", 0),
+        "embedding_model": stats.get("embedding_model", "unknown"),
+        "last_sync": index.get("last_sync"),
+        "config": {
+            "top_k": RAG_TOP_K,
+            "min_relevance": RAG_MIN_RELEVANCE
+        }
+    }
+
+
+@app.get("/rag/documents")
+async def rag_documents():
+    """List indexed documents."""
+    if not RAG_AVAILABLE or not RAG_ENABLED:
+        return {"documents": [], "error": "RAG not available"}
+    
+    index = load_index()
+    documents = []
+    
+    for rel_path, info in index.get("files", {}).items():
+        documents.append({
+            "path": rel_path,
+            "chunks": info.get("chunks", 0),
+            "indexed_at": info.get("indexed_at", ""),
+        })
+    
+    return {"documents": documents, "total": len(documents)}
+
+
+@app.post("/rag/search")
+async def rag_search_endpoint(query: str, n_results: int = 3):
+    """Test RAG search."""
+    if not RAG_AVAILABLE or not RAG_ENABLED:
+        return {"results": [], "error": "RAG not available"}
+    
+    rag = get_rag_system()
+    if not rag:
+        return {"results": [], "error": "RAG not initialized"}
+    
+    results = rag.search(query, n_results=n_results)
+    
+    return {
+        "query": query,
+        "results": [
+            {
+                "content": r["content"][:500] + "..." if len(r["content"]) > 500 else r["content"],
+                "source": r.get("metadata", {}).get("source", ""),
+                "relevance": round(r.get("relevance", 0) * 100, 1)
+            }
+            for r in results
+        ]
+    }
+
+
+@app.post("/rag/sync")
+async def rag_sync_endpoint():
+    """Trigger RAG synchronization (runs rag_admin.py sync)."""
+    import subprocess
+    
+    try:
+        result = subprocess.run(
+            ["python", "rag_admin.py", "sync"],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        
+        # Reload RAG system after sync
+        global _rag_system
+        _rag_system = None
+        
+        return {
+            "success": result.returncode == 0,
+            "output": result.stdout,
+            "error": result.stderr if result.returncode != 0 else None
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 # --------------------------------------------------------------------
