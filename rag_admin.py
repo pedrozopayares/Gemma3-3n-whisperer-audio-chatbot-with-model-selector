@@ -89,6 +89,9 @@ def cmd_sync(args):
             continue
         if file_path.name.startswith('.'):
             continue
+        # Excluir README.md de la base de conocimiento (es documentación interna)
+        if file_path.name.upper() == 'README.MD':
+            continue
         
         rel_path = str(file_path.relative_to(DOCUMENTS_DIR))
         file_hash = get_file_hash(file_path)

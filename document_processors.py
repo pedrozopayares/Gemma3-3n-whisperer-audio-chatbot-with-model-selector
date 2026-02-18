@@ -252,6 +252,39 @@ def table_to_markdown(table) -> str:
 # Excel Processor (.xlsx, .xls)
 # --------------------------------------------------------------------
 
+def _has_valid_header(df_with_header, df_no_header) -> bool:
+    """
+    Determina si la primera fila del Excel es un encabezado real de tabla.
+    Un encabezado real tiene la mayoría de columnas con nombres descriptivos,
+    no valores numéricos ni columnas "Unnamed".
+    """
+    if df_with_header.empty:
+        return False
+    cols = [str(c) for c in df_with_header.columns]
+    unnamed_count = sum(1 for c in cols if 'unnamed' in c.lower())
+    total = len(cols)
+    # Si más del 40% de columnas son "Unnamed", no es un header real
+    if total > 0 and unnamed_count / total > 0.4:
+        return False
+    return True
+
+
+def _excel_to_narrative(df, sheet_name: str) -> str:
+    """
+    Convierte un DataFrame con estructura no tabular (celdas combinadas,
+    formularios, recetas estándar) a texto narrativo legible, eliminando NaN
+    y preservando la relación entre celdas adyacentes.
+    """
+    import pandas as pd
+    lines = []
+    for _, row in df.iterrows():
+        # Recoger solo valores no-nulos de la fila
+        values = [str(v).strip() for v in row if pd.notna(v) and str(v).strip()]
+        if values:
+            lines.append("  ".join(values))
+    return "\n".join(lines)
+
+
 def process_excel_file(
     file_path: Path,
     rows_per_chunk: int = 30,
@@ -259,6 +292,10 @@ def process_excel_file(
 ) -> List[DocumentChunk]:
     """
     Procesa archivos Excel.
+    
+    Detecta automáticamente si la hoja tiene estructura tabular (con headers reales)
+    o estructura de formulario/receta (celdas combinadas, sin header claro).
+    Para hojas tabulares usa formato markdown; para formularios genera texto narrativo.
     
     Args:
         file_path: Ruta al archivo
@@ -283,11 +320,54 @@ def process_excel_file(
         xls = pd.ExcelFile(file_path)
         
         for sheet_name in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet_name)
+            # Leer con y sin header para detectar estructura
+            df_with_header = pd.read_excel(xls, sheet_name=sheet_name)
+            df_no_header = pd.read_excel(xls, sheet_name=sheet_name, header=None)
             
-            if df.empty:
+            if df_no_header.empty:
                 continue
             
+            is_tabular = _has_valid_header(df_with_header, df_no_header)
+            
+            if not is_tabular:
+                # --- Modo narrativo: hojas con celdas combinadas / formularios ---
+                narrative = _excel_to_narrative(df_no_header, sheet_name)
+                if not narrative.strip():
+                    continue
+                
+                # Dividir en chunks si es muy largo
+                if len(narrative) <= DEFAULT_CHUNK_SIZE:
+                    chunks.append(DocumentChunk(
+                        content=f"## {sheet_name}\n\n{narrative}",
+                        metadata={
+                            "source": source,
+                            "sheet": sheet_name,
+                            "type": "excel",
+                            "rows": len(df_no_header),
+                            "format": "narrative"
+                        },
+                        chunk_id=f"{source}_{sheet_name}_{chunk_num}"
+                    ))
+                    chunk_num += 1
+                else:
+                    text_chunks = chunk_text(narrative, DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP)
+                    for i, tc in enumerate(text_chunks):
+                        chunks.append(DocumentChunk(
+                            content=f"## {sheet_name} (parte {i+1})\n\n{tc}",
+                            metadata={
+                                "source": source,
+                                "sheet": sheet_name,
+                                "type": "excel",
+                                "part": i + 1,
+                                "format": "narrative"
+                            },
+                            chunk_id=f"{source}_{sheet_name}_{chunk_num}"
+                        ))
+                        chunk_num += 1
+                continue
+            
+            # --- Modo tabular: hojas con headers reales ---
+            df = df_with_header
             # Limpiar nombres de columnas
             df.columns = [str(col).strip() for col in df.columns]
             
