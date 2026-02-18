@@ -61,3 +61,48 @@ find_*.py
 
 # Offload directory (model offload cache)
 offload/
+
+# User documents for RAG (keep README)
+documents/*
+!documents/README.md
+
+# RAG/ChromaDB data (no versionar)
+rag_data/*
+
+# Documentos de usuario (excepto README)
+documents/*
+!documents/README.md
+
+# Entornos virtuales
+.venv/
+venv/
+
+# Archivos temporales y cachés
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.bak
+*.tmp
+*.swp
+*.swo
+
+# Archivos de configuración locales
+.env
+.env.*
+
+# Archivos de log
+*.log
+
+# Node.js/Frontend (ya incluidos en gemma-chatbot-ui/.gitignore, pero por claridad)
+gemma-chatbot-ui/node_modules/
+gemma-chatbot-ui/dist/
+gemma-chatbot-ui/.env
+
+# IDE/editor
+.vscode/
+.idea/
+.DS_Store
+
+# Otros directorios de caché/modelos
+.offload/

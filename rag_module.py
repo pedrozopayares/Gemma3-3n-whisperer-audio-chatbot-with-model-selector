@@ -23,6 +23,7 @@ from datetime import datetime
 import chromadb
 from chromadb.config import Settings
 import httpx
+import numpy as np
 
 # --------------------------------------------------------------------
 # Configuration
@@ -37,40 +38,71 @@ EMBEDDING_MODEL = "nomic-embed-text"  # ~275MB, muy eficiente
 
 
 class OllamaEmbeddingFunction:
-    """Función de embeddings usando Ollama."""
+    """Función de embeddings usando Ollama, compatible con ChromaDB >= 1.5."""
     
     def __init__(self, model_name: str = EMBEDDING_MODEL):
         self.model_name = model_name
-        self.url = f"{OLLAMA_BASE_URL}/api/embeddings"
+        self.url = f"{OLLAMA_BASE_URL}/api/embed"
     
     def name(self) -> str:
         """Return embedding function name (required by ChromaDB)."""
         return f"ollama_{self.model_name}"
     
-    def __call__(self, input: List[str]) -> List[List[float]]:
-        """Genera embeddings para una lista de textos."""
-        embeddings = []
+    def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Genera embeddings para una lista de strings planos."""
+        try:
+            response = httpx.post(
+                self.url,
+                json={"model": self.model_name, "input": texts},
+                timeout=60.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data["embeddings"]
+            else:
+                print(f"Error getting embeddings: {response.status_code} - {response.text[:200]}")
+                return [[0.0] * 768 for _ in texts]
+        except Exception as e:
+            print(f"Embedding error: {e}")
+            return [[0.0] * 768 for _ in texts]
+
+    def __call__(self, input) -> List[np.ndarray]:
+        """
+        Genera embeddings. ChromaDB 1.5 pasa input como List[List[str]] (lista de listas).
+        Versiones anteriores pasan List[str].
+        Retorna List[np.ndarray] como requiere ChromaDB 1.5.
+        """
+        # Flatten: ChromaDB 1.5 sends [['text1'], ['text2']] instead of ['text1', 'text2']
+        flat_texts = []
+        if input and isinstance(input[0], list):
+            for item in input:
+                flat_texts.append(item[0] if item else "")
+        else:
+            flat_texts = list(input)
         
-        for text in input:
-            try:
-                response = httpx.post(
-                    self.url,
-                    json={"model": self.model_name, "prompt": text},
-                    timeout=60.0
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    embeddings.append(data["embedding"])
-                else:
-                    print(f"Error getting embedding: {response.status_code}")
-                    # Fallback: vector de ceros
-                    embeddings.append([0.0] * 768)
-            except Exception as e:
-                print(f"Embedding error: {e}")
-                embeddings.append([0.0] * 768)
-        
-        return embeddings
+        raw = self._get_embeddings(flat_texts)
+        return [np.array(e, dtype=np.float32) for e in raw]
+
+    def embed_query(self, input = "", query: str = "", **kwargs) -> List[np.ndarray]:
+        """Genera embedding para una query (requerido por ChromaDB >= 1.5).
+        Returns List[np.ndarray] (Embeddings type) — same as __call__."""
+        # ChromaDB 1.5 passes input as a list: embed_query(input=['text'])
+        if isinstance(input, list):
+            texts = [t if isinstance(t, str) else str(t) for t in input]
+        else:
+            texts = [input or query]
+        raw = self._get_embeddings(texts)
+        return [np.array(e, dtype=np.float32) for e in raw]
+
+    def embed_documents(self, input = None, documents: List[str] = None, **kwargs) -> List[np.ndarray]:
+        """Genera embeddings para documentos (requerido por ChromaDB)."""
+        texts = input or documents or []
+        # Flatten if ChromaDB passes nested lists: [['text1'], ['text2']]
+        if texts and isinstance(texts[0], list):
+            texts = [t[0] if t else "" for t in texts]
+        raw = self._get_embeddings(texts)
+        return [np.array(e, dtype=np.float32) for e in raw]
 
 
 class RAGSystem:

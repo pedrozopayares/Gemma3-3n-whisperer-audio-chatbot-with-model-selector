@@ -646,11 +646,16 @@ def build_system_prompt(
     system_prompt = INTERNAL_CONTEXT if INTERNAL_CONTEXT else "Eres un asistente amigable y útil. Responde en español de forma concisa."
     
     # Agregar contexto RAG (documentos relevantes de la base de conocimiento)
+    # PRIORIDAD: La base de conocimiento tiene precedencia sobre el conocimiento general
     if rag_context:
         system_prompt = f"""{system_prompt}
 
-## Base de Conocimiento
-Usa la siguiente información de nuestra base de conocimiento para responder. Si la respuesta no está en estos documentos, puedes usar tu conocimiento general pero menciona que no encontraste información específica.
+## Base de Conocimiento (PRIORIDAD ALTA)
+IMPORTANTE: Usa PRIORITARIAMENTE la siguiente información de nuestra base de conocimiento para responder.
+Si la información relevante está en estos documentos, basa tu respuesta en ellos.
+Solo complementa con tu conocimiento general si los documentos no cubren completamente la pregunta.
+Si nada de los documentos es relevante a la pregunta, responde con tu conocimiento general.
+Cita la fuente del documento cuando uses información de la base de conocimiento.
 
 {rag_context}
 """
@@ -912,7 +917,16 @@ async def ask_audio(payload: AudioPayload):
         if routed_category:
             result["routed_category"] = routed_category
         if rag_results:
-            result["rag_sources"] = [r.get("metadata", {}).get("source", "") for r in rag_results]
+            result["rag_sources"] = list({r.get("metadata", {}).get("source", "") for r in rag_results})
+            result["rag_chunks"] = [
+                {
+                    "content": r.get("content", "")[:500],
+                    "source": r.get("metadata", {}).get("source", "Documento"),
+                    "section": r.get("metadata", {}).get("section", ""),
+                    "relevance": round(r.get("relevance", 0), 4),
+                }
+                for r in rag_results
+            ]
         return result
     
     except Exception as exc:
@@ -994,7 +1008,16 @@ async def ask_text(payload: TextPayload):
         if routed_category:
             result["routed_category"] = routed_category
         if rag_results:
-            result["rag_sources"] = [r.get("metadata", {}).get("source", "") for r in rag_results]
+            result["rag_sources"] = list({r.get("metadata", {}).get("source", "") for r in rag_results})
+            result["rag_chunks"] = [
+                {
+                    "content": r.get("content", "")[:500],
+                    "source": r.get("metadata", {}).get("source", "Documento"),
+                    "section": r.get("metadata", {}).get("section", ""),
+                    "relevance": round(r.get("relevance", 0), 4),
+                }
+                for r in rag_results
+            ]
         return result
     
     except Exception as exc:
