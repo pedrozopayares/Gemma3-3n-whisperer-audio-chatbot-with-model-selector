@@ -1049,7 +1049,7 @@ export default function App() {
       {/* header */}
       <header className="p-4 border-b border-gray-700/50 bg-gray-900/80">
         <div className="flex justify-between items-center">
-          <h1 className="text-lg font-bold">Gemma Voice Assistant</h1>
+          <h1 className="text-lg font-bold">Yotojoro IA v0.2</h1>
           <div className="flex items-center space-x-3">
             <label className="flex items-center space-x-2">
               <span className="text-sm">TTS</span>
