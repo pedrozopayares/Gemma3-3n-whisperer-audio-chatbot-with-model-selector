@@ -1,69 +1,231 @@
 @import "tailwindcss";
 
+/* ─── ChatGPT-like Design Tokens ──────────────────────── */
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: "Söhne", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-primary);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
+/* ── Dark theme (default) ──────────────────────────────── */
+[data-theme="dark"],
+:root:not([data-theme]) {
+  --color-bg-primary: #212121;
+  --color-bg-sidebar: #171717;
+  --color-bg-panel: #1e1e1e;
+  --color-bg-chat: #212121;
+  --color-bg-input: #2f2f2f;
+  --color-bg-hover: #2f2f2f;
+  --color-bg-active-chat: #343541;
+  --color-bg-msg-assistant: #1a1a2e;
+
+  --color-text-primary: #ececec;
+  --color-text-secondary: #b4b4b4;
+  --color-text-tertiary: #8e8e8e;
+  --color-text-placeholder: #6b6b6b;
+
+  --color-border: #353535;
+  --color-accent: #10a37f;
+  --color-accent-hover: #1a7f64;
+
+  --color-user-avatar: #5436da;
+  --color-bot-avatar: #10a37f;
+
+  --color-source-chip: #2a2a3e;
+  --color-source-chip-hover: #353550;
+  --color-source-chip-text: #c4c4e0;
+
+  --color-action-hover: rgba(255, 255, 255, 0.1);
+
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238e8e8e' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
 }
-a:hover {
-  color: #535bf2;
+
+/* ── Light theme ───────────────────────────────────────── */
+[data-theme="light"] {
+  --color-bg-primary: #ffffff;
+  --color-bg-sidebar: #f9f9f9;
+  --color-bg-panel: #f5f5f5;
+  --color-bg-chat: #ffffff;
+  --color-bg-input: #f4f4f4;
+  --color-bg-hover: #ececec;
+  --color-bg-active-chat: #e3e3e3;
+  --color-bg-msg-assistant: #f7f7f8;
+
+  --color-text-primary: #1a1a1a;
+  --color-text-secondary: #5a5a5a;
+  --color-text-tertiary: #888888;
+  --color-text-placeholder: #b4b4b4;
+
+  --color-border: #e0e0e0;
+  --color-accent: #10a37f;
+  --color-accent-hover: #0d8c6d;
+
+  --color-user-avatar: #5436da;
+  --color-bot-avatar: #10a37f;
+
+  --color-source-chip: #e8e8f0;
+  --color-source-chip-hover: #d8d8e5;
+  --color-source-chip-text: #4a4a6a;
+
+  --color-action-hover: rgba(0, 0, 0, 0.06);
+
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%23888888' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
+}
+
+/* ─── Global resets ────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
+  padding: 0;
   min-width: 320px;
   min-height: 100vh;
   width: 100%;
+  overflow: hidden;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+#root {
+  width: 100%;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
 }
 
+/* ─── Tailwind v4 theme extensions ─────────────────────── */
+@theme {
+  --color-sidebar: var(--color-bg-sidebar);
+  --color-panel: var(--color-bg-panel);
+  --color-chat-bg: var(--color-bg-chat);
+  --color-input-bg: var(--color-bg-input);
+  --color-hover: var(--color-bg-hover);
+  --color-active-chat: var(--color-bg-active-chat);
+  --color-msg-assistant: var(--color-bg-msg-assistant);
+  --color-border: var(--color-border);
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-primary: var(--color-text-primary);
+  --color-secondary: var(--color-text-secondary);
+  --color-tertiary: var(--color-text-tertiary);
+  --color-placeholder: var(--color-text-placeholder);
+  --color-user-avatar: var(--color-user-avatar);
+  --color-bot-avatar: var(--color-bot-avatar);
+  --color-source-chip: var(--color-source-chip);
+  --color-source-chip-hover: var(--color-source-chip-hover);
+  --color-source-chip-text: var(--color-source-chip-text);
+  --color-action-hover: var(--color-action-hover);
+}
+
+/* ─── Scrollbar styling ────────────────────────────────── */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+  border-radius: 3px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-text-tertiary);
+}
+
+/* Firefox scrollbar */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+/* Main area scrollbar */
+main::-webkit-scrollbar {
+  width: 6px;
+}
+main::-webkit-scrollbar-track {
+  background: transparent;
+}
+main::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+  border-radius: 3px;
+}
+
+/* ─── Button resets ────────────────────────────────────── */
 button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
+  border: none;
+  background: transparent;
   cursor: pointer;
-  transition: border-color 0.25s;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
 }
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
 button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
+/* ─── Select styling ───────────────────────────────────── */
+select {
+  appearance: none;
+  background-image: var(--select-arrow);
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+}
+
+/* ─── Input/textarea styling ───────────────────────────── */
+input, textarea, select {
+  font-family: inherit;
+  color: var(--color-text-primary);
+}
+input::placeholder, textarea::placeholder {
+  color: var(--color-text-placeholder);
+}
+
+/* ─── Pulse animation for recording ───────────────────── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ─── Spin animation ───────────────────────────────────── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ─── Transitions ──────────────────────────────────────── */
+.transition-colors {
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+.transition-opacity {
+  transition: opacity 0.15s ease;
+}
+.transition-transform {
+  transition: transform 0.15s ease;
+}
+.transition-all {
+  transition: all 0.15s ease;
+}
+
+/* ─── Theme transition (smooth color change on toggle) ── */
+.theme-transition,
+.theme-transition *,
+.theme-transition *::before,
+.theme-transition *::after {
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease !important;
 }

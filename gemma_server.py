@@ -15,6 +15,7 @@ CORS is open for http://localhost:5173 so the React front-end can call us.
 
 import base64
 import os
+import json
 import tempfile
 import ssl
 import subprocess
@@ -24,6 +25,7 @@ import numpy as np
 import scipy.io.wavfile as wavfile
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict
@@ -492,7 +494,7 @@ app = FastAPI(title="Ollama + Whisper Server")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -1350,6 +1352,384 @@ async def rag_sync_endpoint():
             "success": result.returncode == 0,
             "output": result.stdout,
             "error": result.stderr if result.returncode != 0 else None
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# --------------------------------------------------------------------
+# Document serving (for document viewer in frontend)
+# --------------------------------------------------------------------
+
+DOCUMENTS_DIR = Path("documents")
+
+
+@app.get("/documents/{file_path:path}")
+async def serve_document(file_path: str):
+    """Serve a document file from the documents directory."""
+    full_path = (DOCUMENTS_DIR / file_path).resolve()
+    
+    # Security: ensure the path is inside the documents directory
+    if not str(full_path).startswith(str(DOCUMENTS_DIR.resolve())):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Map extensions to MIME types
+    mime_map = {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".doc": "application/msword",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xls": "application/vnd.ms-excel",
+        ".txt": "text/plain; charset=utf-8",
+        ".md": "text/markdown; charset=utf-8",
+        ".csv": "text/csv; charset=utf-8",
+        ".json": "application/json",
+        ".html": "text/html; charset=utf-8",
+        ".htm": "text/html; charset=utf-8",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+    }
+    
+    ext = full_path.suffix.lower()
+    media_type = mime_map.get(ext, "application/octet-stream")
+    
+    return FileResponse(
+        path=str(full_path),
+        media_type=media_type,
+        filename=full_path.name,
+    )
+
+
+@app.get("/documents/{file_path:path}/text")
+async def get_document_text(file_path: str):
+    """Get text content of a document (extracted via document_processors)."""
+    full_path = (DOCUMENTS_DIR / file_path).resolve()
+    
+    if not str(full_path).startswith(str(DOCUMENTS_DIR.resolve())):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    ext = full_path.suffix.lower()
+    
+    try:
+        if ext == ".txt" or ext == ".md" or ext == ".csv":
+            content = full_path.read_text(encoding="utf-8")
+        elif ext == ".pdf":
+            try:
+                from document_processors import extract_text_from_pdf
+                content = extract_text_from_pdf(str(full_path))
+            except ImportError:
+                import subprocess
+                result = subprocess.run(
+                    ["python", "-c", f"from document_processors import extract_text_from_pdf; print(extract_text_from_pdf('{full_path}'))"],
+                    capture_output=True, text=True
+                )
+                content = result.stdout if result.returncode == 0 else f"Error extracting text: {result.stderr}"
+        elif ext == ".docx":
+            try:
+                from document_processors import extract_text_from_docx
+                content = extract_text_from_docx(str(full_path))
+            except ImportError:
+                content = "[Cannot extract text: document_processors not available]"
+        elif ext == ".xlsx" or ext == ".xls":
+            try:
+                from document_processors import extract_text_from_excel
+                content = extract_text_from_excel(str(full_path))
+            except ImportError:
+                content = "[Cannot extract text: document_processors not available]"
+        else:
+            content = "[Unsupported format for text extraction]"
+        
+        return {"content": content, "filename": full_path.name, "extension": ext}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading document: {str(e)}")
+
+
+# --------------------------------------------------------------------
+# Admin Configuration (persistent JSON file)
+# --------------------------------------------------------------------
+
+CONFIG_FILE = Path("app_config.json")
+
+DEFAULT_CONFIG = {
+    "app_name": "Yotojoro IA",
+    "system_prompt": INTERNAL_CONTEXT,
+    "default_model": DEFAULT_MODEL,
+    "default_vision_model": DEFAULT_VISION_MODEL,
+    "router_model": ROUTER_MODEL,
+    "route_models": ROUTE_MODELS,
+    "rag_enabled": RAG_ENABLED,
+    "rag_top_k": RAG_TOP_K,
+    "rag_min_relevance": RAG_MIN_RELEVANCE,
+    "context_window_size": CONTEXT_WINDOW_SIZE,
+    "max_history_messages": MAX_HISTORY_MESSAGES,
+    "keep_recent_messages": KEEP_RECENT_MESSAGES,
+}
+
+
+def load_config() -> dict:
+    """Load app configuration from JSON file, or return defaults."""
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            # Merge with defaults so new keys are present
+            merged = {**DEFAULT_CONFIG, **saved}
+            return merged
+        except Exception as e:
+            print(f"⚠️  Error loading config: {e}")
+    return dict(DEFAULT_CONFIG)
+
+
+def save_config(config: dict):
+    """Persist configuration to JSON file."""
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+
+def apply_config(config: dict):
+    """Apply configuration values to runtime globals."""
+    global INTERNAL_CONTEXT, DEFAULT_MODEL, DEFAULT_VISION_MODEL
+    global ROUTER_MODEL, ROUTE_MODELS
+    global RAG_ENABLED, RAG_TOP_K, RAG_MIN_RELEVANCE
+    global CONTEXT_WINDOW_SIZE, MAX_HISTORY_MESSAGES, KEEP_RECENT_MESSAGES
+
+    INTERNAL_CONTEXT = config.get("system_prompt", INTERNAL_CONTEXT)
+    DEFAULT_MODEL = config.get("default_model", DEFAULT_MODEL)
+    DEFAULT_VISION_MODEL = config.get("default_vision_model", DEFAULT_VISION_MODEL)
+    ROUTER_MODEL = config.get("router_model", ROUTER_MODEL)
+    ROUTE_MODELS = config.get("route_models", ROUTE_MODELS)
+    RAG_ENABLED = config.get("rag_enabled", RAG_ENABLED)
+    RAG_TOP_K = config.get("rag_top_k", RAG_TOP_K)
+    RAG_MIN_RELEVANCE = config.get("rag_min_relevance", RAG_MIN_RELEVANCE)
+    CONTEXT_WINDOW_SIZE = config.get("context_window_size", CONTEXT_WINDOW_SIZE)
+    MAX_HISTORY_MESSAGES = config.get("max_history_messages", MAX_HISTORY_MESSAGES)
+    KEEP_RECENT_MESSAGES = config.get("keep_recent_messages", KEEP_RECENT_MESSAGES)
+
+
+# Apply saved config on startup
+_startup_config = load_config()
+apply_config(_startup_config)
+
+
+# --------------------------------------------------------------------
+# Admin API Endpoints
+# --------------------------------------------------------------------
+
+@app.get("/admin/config")
+async def get_admin_config():
+    """Return current application configuration."""
+    config = load_config()
+    return config
+
+
+class ConfigUpdate(BaseModel):
+    app_name: Optional[str] = None
+    system_prompt: Optional[str] = None
+    default_model: Optional[str] = None
+    default_vision_model: Optional[str] = None
+    router_model: Optional[str] = None
+    route_models: Optional[Dict[str, str]] = None
+    rag_enabled: Optional[bool] = None
+    rag_top_k: Optional[int] = None
+    rag_min_relevance: Optional[float] = None
+    context_window_size: Optional[int] = None
+    max_history_messages: Optional[int] = None
+    keep_recent_messages: Optional[int] = None
+
+
+@app.put("/admin/config")
+async def update_admin_config(update: ConfigUpdate):
+    """Update application configuration (partial update)."""
+    config = load_config()
+    update_dict = update.model_dump(exclude_none=True)
+    config.update(update_dict)
+    save_config(config)
+    apply_config(config)
+    return {"success": True, "config": config}
+
+
+@app.get("/admin/services/status")
+async def admin_services_status():
+    """Test all backend services and return their status."""
+    results = {}
+
+    # 1. Ollama
+    try:
+        ollama_ok = await check_ollama_running()
+        installed = await get_installed_models() if ollama_ok else []
+        results["ollama"] = {
+            "status": "ok" if ollama_ok else "error",
+            "message": f"{len(installed)} modelos instalados" if ollama_ok else "Ollama no está ejecutándose. Ejecuta: ollama serve",
+            "installed_models": installed,
+        }
+    except Exception as e:
+        results["ollama"] = {"status": "error", "message": str(e)}
+
+    # 2. Whisper
+    try:
+        import whisper
+        results["whisper"] = {
+            "status": "ok",
+            "message": "Módulo whisper disponible",
+            "model_loaded": whisper_model is not None,
+        }
+    except ImportError:
+        results["whisper"] = {
+            "status": "error",
+            "message": "Whisper no instalado. Ejecuta: pip install openai-whisper",
+        }
+
+    # 3. RAG
+    try:
+        if not RAG_AVAILABLE:
+            results["rag"] = {
+                "status": "error",
+                "message": "Módulo RAG no disponible. Ejecuta: pip install chromadb",
+            }
+        elif not RAG_ENABLED:
+            results["rag"] = {
+                "status": "warning",
+                "message": "RAG está deshabilitado en la configuración",
+            }
+        else:
+            rag = get_rag_system()
+            if rag:
+                stats = rag.get_stats()
+                results["rag"] = {
+                    "status": "ok",
+                    "message": f"{stats.get('total_documents', 0)} chunks indexados",
+                    "chunks": stats.get("total_documents", 0),
+                }
+            else:
+                results["rag"] = {
+                    "status": "error",
+                    "message": "RAG no pudo inicializarse",
+                }
+    except Exception as e:
+        results["rag"] = {"status": "error", "message": str(e)}
+
+    # 4. TTS
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            result = subprocess.run(["which", "say"], capture_output=True, timeout=5)
+            results["tts"] = {
+                "status": "ok" if result.returncode == 0 else "error",
+                "message": "TTS nativo de macOS disponible" if result.returncode == 0 else "Comando 'say' no encontrado",
+                "engine": "macos_native",
+            }
+        elif system == "Windows":
+            results["tts"] = {
+                "status": "ok",
+                "message": "TTS SAPI de Windows disponible",
+                "engine": "windows_sapi",
+            }
+        else:
+            results["tts"] = {
+                "status": "warning",
+                "message": "TTS nativo no disponible, usando TTS del navegador",
+                "engine": "browser",
+            }
+    except Exception as e:
+        results["tts"] = {"status": "error", "message": str(e)}
+
+    # 5. Documents directory
+    try:
+        docs_path = Path("documents")
+        if docs_path.exists():
+            file_count = sum(1 for _ in docs_path.rglob("*") if _.is_file())
+            results["documents"] = {
+                "status": "ok",
+                "message": f"{file_count} archivos en directorio de documentos",
+                "path": str(docs_path.resolve()),
+            }
+        else:
+            results["documents"] = {
+                "status": "warning",
+                "message": "Directorio 'documents/' no existe",
+            }
+    except Exception as e:
+        results["documents"] = {"status": "error", "message": str(e)}
+
+    return results
+
+
+@app.post("/admin/models/pull")
+async def admin_pull_model(model: str):
+    """Pull (download) an Ollama model. Returns a streaming response with progress."""
+    try:
+        async def stream_pull():
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST",
+                    f"{OLLAMA_BASE_URL}/api/pull",
+                    json={"name": model},
+                    timeout=None,
+                ) as response:
+                    if response.status_code != 200:
+                        yield json.dumps({"error": f"Ollama error: {response.status_code}"}) + "\n"
+                        return
+                    async for line in response.aiter_lines():
+                        if line.strip():
+                            yield line + "\n"
+
+        return StreamingResponse(stream_pull(), media_type="application/x-ndjson")
+    except Exception as e:
+        raise HTTPException(500, f"Error pulling model: {str(e)}")
+
+
+@app.delete("/admin/models/{model_name:path}")
+async def admin_delete_model(model_name: str):
+    """Delete a specific Ollama model."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.request(
+                "DELETE",
+                f"{OLLAMA_BASE_URL}/api/delete",
+                json={"name": model_name},
+                timeout=30.0,
+            )
+            if response.status_code == 200:
+                return {"success": True, "message": f"Modelo '{model_name}' eliminado"}
+            else:
+                raise HTTPException(response.status_code, response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/admin/test/ollama")
+async def admin_test_ollama(model: str = "gemma3:1b"):
+    """Test Ollama with a simple prompt."""
+    try:
+        response = await ollama_chat(
+            model,
+            [{"role": "user", "content": "Responde solo con: Hola, funciono correctamente."}],
+            temperature=0,
+            max_tokens=30,
+        )
+        return {"success": True, "model": model, "response": response}
+    except Exception as e:
+        return {"success": False, "model": model, "error": str(e)}
+
+
+@app.post("/admin/test/whisper")
+async def admin_test_whisper():
+    """Test Whisper model loading."""
+    try:
+        model = get_whisper_model()
+        return {
+            "success": True,
+            "message": "Whisper cargado correctamente",
+            "model_type": "base",
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
