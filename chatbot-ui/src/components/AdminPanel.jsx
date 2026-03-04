@@ -13,6 +13,7 @@ import {
   rebuildRag,
   scanDocuments,
   removeRagDocument,
+  uploadDocuments,
 } from "../services/adminApi";
 
 // ─── Available models catalog (mirrors backend AVAILABLE_MODELS) ───
@@ -705,6 +706,11 @@ function RagTab({ config, onSave }) {
   const [scannedFiles, setScannedFiles] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [removing, setRemoving] = useState(null);
+  // Upload state
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState(null);
+  const [uploadSubfolder, setUploadSubfolder] = useState("");
+  const uploadInputRef = React.useRef(null);
 
   useEffect(() => {
     if (config) {
@@ -783,6 +789,25 @@ function RagTab({ config, onSave }) {
       alert(`Error: ${e.message}`);
     } finally {
       setRemoving(null);
+    }
+  };
+
+  const handleUpload = async (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    setUploadResult(null);
+    try {
+      const result = await uploadDocuments(Array.from(files), uploadSubfolder.trim());
+      setUploadResult(result);
+      // Refresh scan after upload
+      await loadStatus();
+    } catch (err) {
+      setUploadResult({ success: false, message: err.message });
+    } finally {
+      setUploading(false);
+      // Reset file input so the user can re-upload the same files
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
     }
   };
 
@@ -899,6 +924,84 @@ function RagTab({ config, onSave }) {
             <span className="flex items-center gap-1 text-sm text-green-400">
               <IconCheck className="w-4 h-4" /> Guardado
             </span>
+          )}
+        </div>
+      </div>
+
+      {/* Upload documents */}
+      <div className="border-t border-border pt-4">
+        <h4 className="text-sm font-semibold text-primary mb-3">Subir documentos</h4>
+        <p className="text-xs text-tertiary mb-3">
+          Sube archivos a la carpeta <code className="text-accent">documents/</code> para su posterior escaneo e indexación.
+          {scannedFiles?.supported_extensions?.length > 0 && (
+            <> Formatos aceptados: <strong>{scannedFiles.supported_extensions.join(", ")}</strong></>
+          )}
+        </p>
+
+        <div className="space-y-3">
+          {/* Optional subfolder */}
+          <div>
+            <label className="block text-xs text-secondary mb-1">Subcarpeta (opcional)</label>
+            <input
+              type="text"
+              value={uploadSubfolder}
+              onChange={(e) => setUploadSubfolder(e.target.value)}
+              placeholder="Ej: recetas/postres"
+              className="w-full bg-input-bg text-primary text-sm px-3 py-2 rounded-lg border border-border focus:outline-none focus:border-accent placeholder:text-placeholder"
+            />
+          </div>
+
+          {/* File picker + upload button */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <input
+              ref={uploadInputRef}
+              type="file"
+              multiple
+              accept={scannedFiles?.supported_extensions?.map(e => e).join(",") || ".txt,.md,.pdf,.docx,.xlsx,.xls"}
+              onChange={handleUpload}
+              className="hidden"
+              disabled={uploading}
+            />
+            <button
+              onClick={() => uploadInputRef.current?.click()}
+              disabled={uploading}
+              className="px-5 py-2.5 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-semibold transition-colors disabled:opacity-50 active:scale-95 shadow-sm"
+            >
+              {uploading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <IconLoader className="w-4 h-4 animate-spin" /> Subiendo…
+                </span>
+              ) : (
+                "Seleccionar y subir archivos"
+              )}
+            </button>
+          </div>
+
+          {/* Upload result */}
+          {uploadResult && (
+            <div
+              className={`p-3 rounded-lg text-sm ${
+                uploadResult.success
+                  ? "bg-green-500/10 border border-green-500/30 text-green-400"
+                  : "bg-red-500/10 border border-red-500/30 text-red-400"
+              }`}
+            >
+              <p>{uploadResult.message}</p>
+              {uploadResult.uploaded?.length > 0 && (
+                <ul className="mt-1 text-xs space-y-0.5">
+                  {uploadResult.uploaded.map((f) => (
+                    <li key={f.path}>✓ {f.path} ({(f.size / 1024).toFixed(1)} KB)</li>
+                  ))}
+                </ul>
+              )}
+              {uploadResult.errors?.length > 0 && (
+                <ul className="mt-1 text-xs space-y-0.5">
+                  {uploadResult.errors.map((e, i) => (
+                    <li key={i}>✗ {e.name}: {e.error}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       </div>

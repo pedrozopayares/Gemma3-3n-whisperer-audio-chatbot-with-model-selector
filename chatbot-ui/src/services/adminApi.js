@@ -120,6 +120,22 @@ export async function removeRagDocument(filePath) {
   return res.json();
 }
 
+/* ── Document Upload ───────────────────────────────────── */
+
+export async function uploadDocuments(files, subfolder = "") {
+  const form = new FormData();
+  for (const f of files) {
+    form.append("files", f);
+  }
+  if (subfolder) form.append("subfolder", subfolder);
+  const res = await fetch(`${API_BASE}/rag/upload`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) throw new Error("Error al subir documentos");
+  return res.json();
+}
+
 /* ── Health ────────────────────────────────────────────── */
 
 export async function getHealth() {

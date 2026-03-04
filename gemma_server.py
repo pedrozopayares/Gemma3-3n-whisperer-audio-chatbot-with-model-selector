@@ -1533,6 +1533,61 @@ async def rag_remove_document(file_path: str):
 
 
 # --------------------------------------------------------------------
+# Upload documents to documents/ folder
+# --------------------------------------------------------------------
+
+@app.post("/rag/upload")
+async def rag_upload_documents(
+    files: List[UploadFile] = File(...),
+    subfolder: Optional[str] = Form(None),
+):
+    """Upload one or more files into the documents/ directory."""
+    docs_dir = Path("documents")
+    docs_dir.mkdir(exist_ok=True)
+
+    try:
+        from document_processors import SUPPORTED_EXTENSIONS
+    except ImportError:
+        SUPPORTED_EXTENSIONS = set()
+
+    target_dir = docs_dir
+    if subfolder:
+        # Sanitise: remove leading slashes / dots
+        safe = Path(subfolder.strip().strip("/").strip("."))
+        target_dir = docs_dir / safe
+        # Security check
+        if not str(target_dir.resolve()).startswith(str(docs_dir.resolve())):
+            raise HTTPException(status_code=400, detail="Subcarpeta inválida")
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+    saved = []
+    errors = []
+    for f in files:
+        ext = Path(f.filename).suffix.lower()
+        if SUPPORTED_EXTENSIONS and ext not in SUPPORTED_EXTENSIONS:
+            errors.append({"name": f.filename, "error": f"Formato {ext} no soportado"})
+            continue
+        dest = target_dir / f.filename
+        try:
+            content = await f.read()
+            dest.write_bytes(content)
+            saved.append({
+                "name": f.filename,
+                "path": str(dest.relative_to(docs_dir)),
+                "size": len(content),
+            })
+        except Exception as e:
+            errors.append({"name": f.filename, "error": str(e)})
+
+    return {
+        "success": len(errors) == 0,
+        "uploaded": saved,
+        "errors": errors,
+        "message": f"{len(saved)} archivo(s) subido(s)" + (f", {len(errors)} error(es)" if errors else ""),
+    }
+
+
+# --------------------------------------------------------------------
 # Document serving (for document viewer in frontend)
 # --------------------------------------------------------------------
 
