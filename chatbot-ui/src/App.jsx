@@ -517,7 +517,7 @@ export default function App() {
             {sidebarCollapsed && (
               <button
                 onClick={() => setSidebarCollapsed(false)}
-                className="p-1.5 rounded-lg hover:bg-hover text-secondary hover:text-primary transition-colors lg:hidden"
+                className="p-2.5 rounded-lg bg-hover hover:bg-border text-secondary hover:text-primary transition-colors active:scale-95 lg:hidden"
               >
                 <IconSidebar className="w-5 h-5" />
               </button>
@@ -538,7 +538,7 @@ export default function App() {
             <ThemeToggle theme={theme} onToggle={toggleTheme} />
             <button
               onClick={() => setShowAdminPanel(true)}
-              className="p-1.5 rounded-lg hover:bg-hover text-tertiary hover:text-primary transition-colors"
+              className="p-2.5 rounded-lg bg-hover hover:bg-border text-tertiary hover:text-primary transition-colors active:scale-95"
               title="Panel de administración"
             >
               <IconSettings className="w-5 h-5" />

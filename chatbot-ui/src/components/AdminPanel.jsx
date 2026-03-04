@@ -10,6 +10,9 @@ import {
   testWhisper,
   getRagStatus,
   syncRag,
+  rebuildRag,
+  scanDocuments,
+  removeRagDocument,
 } from "../services/adminApi";
 
 // ─── Available models catalog (mirrors backend AVAILABLE_MODELS) ───
@@ -126,14 +129,14 @@ function GeneralTab({ config, onSave }) {
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm text-secondary mb-1">Ventana de contexto (tokens)</label>
               <input
                 type="number"
                 value={form.context_window_size}
                 onChange={(e) => setForm({ ...form, context_window_size: parseInt(e.target.value) || 2048 })}
-                className="w-full bg-input-bg text-primary text-sm px-3 py-2 rounded-lg border border-border focus:outline-none focus:border-accent"
+                className="w-full bg-input-bg text-primary text-sm px-3 py-2.5 rounded-lg border border-border focus:outline-none focus:border-accent"
                 min={1024}
                 max={131072}
                 step={1024}
@@ -145,7 +148,7 @@ function GeneralTab({ config, onSave }) {
                 type="number"
                 value={form.max_history_messages}
                 onChange={(e) => setForm({ ...form, max_history_messages: parseInt(e.target.value) || 10 })}
-                className="w-full bg-input-bg text-primary text-sm px-3 py-2 rounded-lg border border-border focus:outline-none focus:border-accent"
+                className="w-full bg-input-bg text-primary text-sm px-3 py-2.5 rounded-lg border border-border focus:outline-none focus:border-accent"
                 min={4}
                 max={100}
               />
@@ -156,7 +159,7 @@ function GeneralTab({ config, onSave }) {
                 type="number"
                 value={form.keep_recent_messages}
                 onChange={(e) => setForm({ ...form, keep_recent_messages: parseInt(e.target.value) || 4 })}
-                className="w-full bg-input-bg text-primary text-sm px-3 py-2 rounded-lg border border-border focus:outline-none focus:border-accent"
+                className="w-full bg-input-bg text-primary text-sm px-3 py-2.5 rounded-lg border border-border focus:outline-none focus:border-accent"
                 min={2}
                 max={50}
               />
@@ -169,7 +172,7 @@ function GeneralTab({ config, onSave }) {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-medium transition-colors disabled:opacity-50"
+          className="px-5 py-2.5 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-semibold transition-colors disabled:opacity-50 active:scale-95 shadow-sm"
         >
           {saving ? "Guardando…" : "Guardar cambios"}
         </button>
@@ -294,13 +297,13 @@ function ModelsTab({ config, onSave, installedModels }) {
       {/* Model defaults */}
       <div>
         <h3 className="text-base font-semibold text-primary mb-4">Modelos por defecto</h3>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm text-secondary mb-1">Modelo de texto</label>
             <select
               value={defaultModel}
               onChange={(e) => setDefaultModel(e.target.value)}
-              className="w-full bg-input-bg text-primary text-sm px-3 py-2 rounded-lg border border-border focus:outline-none focus:border-accent"
+              className="w-full bg-input-bg text-primary text-sm px-3 py-2.5 rounded-lg border border-border focus:outline-none focus:border-accent"
             >
               {allModelKeys.filter((k) => !MODEL_CATALOG[k].vision).map((k) => (
                 <option key={k} value={k}>
@@ -314,7 +317,7 @@ function ModelsTab({ config, onSave, installedModels }) {
             <select
               value={defaultVision}
               onChange={(e) => setDefaultVision(e.target.value)}
-              className="w-full bg-input-bg text-primary text-sm px-3 py-2 rounded-lg border border-border focus:outline-none focus:border-accent"
+              className="w-full bg-input-bg text-primary text-sm px-3 py-2.5 rounded-lg border border-border focus:outline-none focus:border-accent"
             >
               {allModelKeys.filter((k) => MODEL_CATALOG[k].vision).map((k) => (
                 <option key={k} value={k}>
@@ -329,13 +332,13 @@ function ModelsTab({ config, onSave, installedModels }) {
       {/* Smart routing */}
       <div>
         <h3 className="text-sm font-semibold text-primary mb-3">Enrutamiento inteligente (Auto)</h3>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label className="block text-xs text-secondary mb-1">Modelo clasificador</label>
             <select
               value={routerModel}
               onChange={(e) => setRouterModel(e.target.value)}
-              className="w-full bg-input-bg text-primary text-xs px-2 py-1.5 rounded-lg border border-border focus:outline-none focus:border-accent"
+              className="w-full bg-input-bg text-primary text-xs px-2 py-2 rounded-lg border border-border focus:outline-none focus:border-accent"
             >
               {allModelKeys.map((k) => (
                 <option key={k} value={k}>{MODEL_CATALOG[k].name} {isInstalled(k) ? "✓" : ""}</option>
@@ -347,7 +350,7 @@ function ModelsTab({ config, onSave, installedModels }) {
             <select
               value={routeChat}
               onChange={(e) => setRouteChat(e.target.value)}
-              className="w-full bg-input-bg text-primary text-xs px-2 py-1.5 rounded-lg border border-border focus:outline-none focus:border-accent"
+              className="w-full bg-input-bg text-primary text-xs px-2 py-2 rounded-lg border border-border focus:outline-none focus:border-accent"
             >
               {allModelKeys.filter((k) => !MODEL_CATALOG[k].vision).map((k) => (
                 <option key={k} value={k}>{MODEL_CATALOG[k].name} {isInstalled(k) ? "✓" : ""}</option>
@@ -359,7 +362,7 @@ function ModelsTab({ config, onSave, installedModels }) {
             <select
               value={routeMath}
               onChange={(e) => setRouteMath(e.target.value)}
-              className="w-full bg-input-bg text-primary text-xs px-2 py-1.5 rounded-lg border border-border focus:outline-none focus:border-accent"
+              className="w-full bg-input-bg text-primary text-xs px-2 py-2 rounded-lg border border-border focus:outline-none focus:border-accent"
             >
               {allModelKeys.filter((k) => !MODEL_CATALOG[k].vision).map((k) => (
                 <option key={k} value={k}>{MODEL_CATALOG[k].name} {isInstalled(k) ? "✓" : ""}</option>
@@ -373,7 +376,7 @@ function ModelsTab({ config, onSave, installedModels }) {
         <button
           onClick={handleSaveDefaults}
           disabled={saving}
-          className="px-4 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-medium transition-colors disabled:opacity-50"
+          className="px-5 py-2.5 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-semibold transition-colors disabled:opacity-50 active:scale-95 shadow-sm"
         >
           {saving ? "Guardando…" : "Guardar configuración de modelos"}
         </button>
@@ -394,12 +397,12 @@ function ModelsTab({ config, onSave, installedModels }) {
             onChange={(e) => setCustomModel(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handlePullCustom()}
             placeholder="ej: gemma3:4b o nombre:tag"
-            className="flex-1 bg-input-bg text-primary text-sm px-3 py-2 rounded-lg border border-border focus:outline-none focus:border-accent placeholder:text-placeholder"
+            className="flex-1 bg-input-bg text-primary text-sm px-3 py-2.5 rounded-lg border border-border focus:outline-none focus:border-accent placeholder:text-placeholder"
           />
           <button
             onClick={handlePullCustom}
             disabled={pulling || !customModel.trim()}
-            className="px-4 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-medium transition-colors disabled:opacity-50"
+            className="px-5 py-2.5 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-semibold transition-colors disabled:opacity-50 active:scale-95 shadow-sm"
           >
             Descargar
           </button>
@@ -434,27 +437,27 @@ function ModelsTab({ config, onSave, installedModels }) {
             return (
               <div
                 key={key}
-                className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-hover transition-colors"
+                className="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-hover transition-colors"
               >
-                <div className="flex items-center gap-3 min-w-0">
+                <div className="flex items-center gap-2 sm:gap-3 min-w-0">
                   <span
-                    className={`w-2 h-2 rounded-full shrink-0 ${inst ? "bg-green-400" : "bg-border"}`}
+                    className={`w-2.5 h-2.5 rounded-full shrink-0 ${inst ? "bg-green-400" : "bg-border"}`}
                   />
                   <div className="min-w-0">
                     <span className="text-sm text-primary">{info.name}</span>
-                    <span className="text-xs text-tertiary ml-2">{key}</span>
+                    <span className="text-xs text-tertiary ml-1.5 hidden sm:inline">{key}</span>
                     {info.vision && (
-                      <span className="text-xs text-accent ml-2">👁 visión</span>
+                      <span className="text-xs text-accent ml-1.5">👁 visión</span>
                     )}
                   </div>
-                  <span className="text-xs text-tertiary">{info.size}</span>
+                  <span className="text-xs text-tertiary hidden sm:inline">{info.size}</span>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   {inst ? (
                     <button
                       onClick={() => handleDelete(key)}
                       disabled={deleting === key}
-                      className="px-2.5 py-1 rounded text-xs bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-50"
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30 transition-colors disabled:opacity-50 active:scale-95"
                     >
                       {deleting === key ? "…" : "Eliminar"}
                     </button>
@@ -462,7 +465,7 @@ function ModelsTab({ config, onSave, installedModels }) {
                     <button
                       onClick={() => handlePull(key)}
                       disabled={pulling !== null}
-                      className="px-2.5 py-1 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50"
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors disabled:opacity-50 active:scale-95"
                     >
                       Descargar
                     </button>
@@ -585,7 +588,7 @@ function ServicesTab() {
         <h3 className="text-base font-semibold text-primary">Estado de servicios</h3>
         <button
           onClick={loadStatus}
-          className="text-xs text-accent hover:text-accent-hover transition-colors"
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors active:scale-95"
         >
           Recargar
         </button>
@@ -605,7 +608,7 @@ function ServicesTab() {
               <button
                 onClick={svc.onTest}
                 disabled={testing === svc.key}
-                className="px-3 py-1 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50"
+                className="px-3.5 py-1.5 rounded-lg text-xs font-medium bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors disabled:opacity-50 active:scale-95"
               >
                 {testing === svc.key ? (
                   <span className="flex items-center gap-1">
@@ -675,12 +678,17 @@ function RagTab({ config, onSave }) {
   const [ragStatus, setRagStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
   const [ragEnabled, setRagEnabled] = useState(config?.rag_enabled ?? true);
   const [topK, setTopK] = useState(config?.rag_top_k ?? 3);
   const [minRelevance, setMinRelevance] = useState(config?.rag_min_relevance ?? 0.3);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Documents scan state
+  const [scannedFiles, setScannedFiles] = useState(null);
+  const [scanning, setScanning] = useState(false);
+  const [removing, setRemoving] = useState(null);
 
   useEffect(() => {
     if (config) {
@@ -690,12 +698,34 @@ function RagTab({ config, onSave }) {
     }
   }, [config]);
 
-  useEffect(() => {
-    getRagStatus()
-      .then(setRagStatus)
-      .catch(console.error)
-      .finally(() => setLoading(false));
+  const loadStatus = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [status, scan] = await Promise.all([getRagStatus(), scanDocuments()]);
+      setRagStatus(status);
+      setScannedFiles(scan);
+    } catch (e) {
+      console.error("Error loading RAG status:", e);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadStatus();
+  }, [loadStatus]);
+
+  const handleScan = async () => {
+    setScanning(true);
+    try {
+      const scan = await scanDocuments();
+      setScannedFiles(scan);
+    } catch (e) {
+      console.error("Scan error:", e);
+    } finally {
+      setScanning(false);
+    }
+  };
 
   const handleSync = async () => {
     setSyncing(true);
@@ -703,13 +733,40 @@ function RagTab({ config, onSave }) {
     try {
       const result = await syncRag();
       setSyncResult(result);
-      // Refresh status
-      const status = await getRagStatus();
-      setRagStatus(status);
+      // Refresh everything
+      await loadStatus();
     } catch (e) {
       setSyncResult({ success: false, error: e.message });
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleRebuild = async () => {
+    if (!confirm("¿Reconstruir toda la base de conocimiento desde cero?\nSe eliminarán todos los datos indexados y se volverán a procesar los documentos.")) return;
+    setRebuilding(true);
+    setSyncResult(null);
+    try {
+      const result = await rebuildRag();
+      setSyncResult({ ...result, rebuilt: true });
+      await loadStatus();
+    } catch (e) {
+      setSyncResult({ success: false, error: e.message });
+    } finally {
+      setRebuilding(false);
+    }
+  };
+
+  const handleRemoveDoc = async (filePath) => {
+    if (!confirm(`¿Eliminar "${filePath}" del índice?`)) return;
+    setRemoving(filePath);
+    try {
+      await removeRagDocument(filePath);
+      await loadStatus();
+    } catch (e) {
+      alert(`Error: ${e.message}`);
+    } finally {
+      setRemoving(null);
     }
   };
 
@@ -728,12 +785,20 @@ function RagTab({ config, onSave }) {
     }
   };
 
+  const formatSize = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const isBusy = syncing || rebuilding;
+
   return (
     <div className="space-y-6">
+      {/* Status */}
       <div>
         <h3 className="text-base font-semibold text-primary mb-4">Base de conocimiento (RAG)</h3>
 
-        {/* Status */}
         {loading ? (
           <div className="flex items-center gap-2 text-sm text-tertiary">
             <IconLoader className="w-4 h-4 animate-spin" /> Cargando estado…
@@ -751,6 +816,9 @@ function RagTab({ config, onSave }) {
             {ragStatus.embedding_model && (
               <p className="text-xs text-tertiary">Modelo de embeddings: {ragStatus.embedding_model}</p>
             )}
+            {ragStatus.last_sync && (
+              <p className="text-xs text-tertiary">Última sincronización: {new Date(ragStatus.last_sync).toLocaleString()}</p>
+            )}
           </div>
         ) : null}
       </div>
@@ -764,26 +832,26 @@ function RagTab({ config, onSave }) {
             <label className="text-sm text-secondary">RAG habilitado</label>
             <button
               onClick={() => setRagEnabled(!ragEnabled)}
-              className={`relative w-10 h-5 rounded-full transition-colors ${
+              className={`relative w-12 h-6 rounded-full transition-colors ${
                 ragEnabled ? "bg-accent" : "bg-border"
               }`}
             >
               <div
-                className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                  ragEnabled ? "left-[22px]" : "left-0.5"
+                className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform shadow-sm ${
+                  ragEnabled ? "left-[26px]" : "left-0.5"
                 }`}
               />
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-secondary mb-1">Documentos a recuperar (top_k)</label>
               <input
                 type="number"
                 value={topK}
                 onChange={(e) => setTopK(parseInt(e.target.value) || 1)}
-                className="w-full bg-input-bg text-primary text-sm px-3 py-2 rounded-lg border border-border focus:outline-none focus:border-accent"
+                className="w-full bg-input-bg text-primary text-sm px-3 py-2.5 rounded-lg border border-border focus:outline-none focus:border-accent"
                 min={1}
                 max={20}
               />
@@ -794,7 +862,7 @@ function RagTab({ config, onSave }) {
                 type="number"
                 value={minRelevance}
                 onChange={(e) => setMinRelevance(parseFloat(e.target.value) || 0)}
-                className="w-full bg-input-bg text-primary text-sm px-3 py-2 rounded-lg border border-border focus:outline-none focus:border-accent"
+                className="w-full bg-input-bg text-primary text-sm px-3 py-2.5 rounded-lg border border-border focus:outline-none focus:border-accent"
                 min={0}
                 max={1}
                 step={0.05}
@@ -807,7 +875,7 @@ function RagTab({ config, onSave }) {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-4 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-medium transition-colors disabled:opacity-50"
+            className="px-5 py-2.5 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-semibold transition-colors disabled:opacity-50 active:scale-95 shadow-sm"
           >
             {saving ? "Guardando…" : "Guardar configuración RAG"}
           </button>
@@ -819,25 +887,122 @@ function RagTab({ config, onSave }) {
         </div>
       </div>
 
-      {/* Sync */}
+      {/* Documents scan */}
       <div className="border-t border-border pt-4">
-        <h4 className="text-sm font-semibold text-primary mb-2">Sincronizar documentos</h4>
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h4 className="text-sm font-semibold text-primary">Documentos en <code className="text-accent">documents/</code></h4>
+            {scannedFiles && (
+              <p className="text-xs text-tertiary mt-0.5">
+                {scannedFiles.total} archivos encontrados · {scannedFiles.indexed_count} indexados
+                {scannedFiles.supported_extensions?.length > 0 && (
+                  <> · Formatos: {scannedFiles.supported_extensions.join(", ")}</>
+                )}
+              </p>
+            )}
+          </div>
+          <button
+            onClick={handleScan}
+            disabled={scanning}
+            className="px-3.5 py-1.5 rounded-lg text-xs font-medium bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors disabled:opacity-50 active:scale-95 shrink-0"
+          >
+            {scanning ? (
+              <span className="flex items-center gap-1">
+                <IconLoader className="w-3 h-3 animate-spin" /> Escaneando…
+              </span>
+            ) : (
+              "Escanear"
+            )}
+          </button>
+        </div>
+
+        {scannedFiles?.files?.length > 0 ? (
+          <div className="space-y-1 max-h-64 overflow-y-auto scrollbar-thin">
+            {scannedFiles.files.map((f) => (
+              <div
+                key={f.path}
+                className="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-hover transition-colors"
+              >
+                <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                      f.indexed ? "bg-green-400" : f.supported ? "bg-yellow-400" : "bg-border"
+                    }`}
+                    title={f.indexed ? "Indexado" : f.supported ? "Soportado, no indexado" : "Formato no soportado"}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate">
+                      <span className="text-sm text-primary">{f.name}</span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-xs text-tertiary">{formatSize(f.size)}</span>
+                      {f.indexed && (
+                        <span className="text-xs bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">
+                          {f.chunks} chunks
+                        </span>
+                      )}
+                      {!f.supported && (
+                        <span className="text-xs bg-border text-tertiary px-1.5 py-0.5 rounded">
+                          no soportado
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                {f.indexed && (
+                  <button
+                    onClick={() => handleRemoveDoc(f.path)}
+                    disabled={removing === f.path}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30 transition-colors disabled:opacity-50 shrink-0 ml-2 active:scale-95"
+                  >
+                    {removing === f.path ? "…" : "Quitar"}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : scannedFiles ? (
+          <p className="text-xs text-tertiary py-4 text-center">
+            No hay archivos en <code className="text-accent">documents/</code>. Agrega documentos para indexar.
+          </p>
+        ) : null}
+      </div>
+
+      {/* Sync & Rebuild actions */}
+      <div className="border-t border-border pt-4">
+        <h4 className="text-sm font-semibold text-primary mb-2">Acciones</h4>
         <p className="text-xs text-tertiary mb-3">
-          Escanea el directorio <code className="text-accent">documents/</code> y actualiza el índice de búsqueda.
+          <strong>Sincronizar:</strong> detecta cambios (nuevos, modificados y eliminados) y actualiza el índice.<br />
+          <strong>Reconstruir:</strong> elimina toda la base y la vuelve a crear desde cero.
         </p>
-        <button
-          onClick={handleSync}
-          disabled={syncing}
-          className="px-4 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-medium transition-colors disabled:opacity-50"
-        >
-          {syncing ? (
-            <span className="flex items-center gap-2">
-              <IconLoader className="w-4 h-4 animate-spin" /> Sincronizando…
-            </span>
-          ) : (
-            "Sincronizar ahora"
-          )}
-        </button>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+          <button
+            onClick={handleSync}
+            disabled={isBusy}
+            className="px-5 py-2.5 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-semibold transition-colors disabled:opacity-50 active:scale-95 shadow-sm"
+          >
+            {syncing ? (
+              <span className="flex items-center justify-center gap-2">
+                <IconLoader className="w-4 h-4 animate-spin" /> Sincronizando…
+              </span>
+            ) : (
+              "Sincronizar"
+            )}
+          </button>
+          <button
+            onClick={handleRebuild}
+            disabled={isBusy}
+            className="px-5 py-2.5 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 text-sm font-semibold transition-colors disabled:opacity-50 border border-red-500/30 active:scale-95"
+          >
+            {rebuilding ? (
+              <span className="flex items-center justify-center gap-2">
+                <IconLoader className="w-4 h-4 animate-spin" /> Reconstruyendo…
+              </span>
+            ) : (
+              "Reconstruir base completa"
+            )}
+          </button>
+        </div>
 
         {syncResult && (
           <div
@@ -847,7 +1012,11 @@ function RagTab({ config, onSave }) {
                 : "bg-red-500/10 border border-red-500/30 text-red-400"
             }`}
           >
-            {syncResult.success ? "Sincronización completada" : `Error: ${syncResult.error}`}
+            {syncResult.success
+              ? syncResult.rebuilt
+                ? "Base reconstruida exitosamente"
+                : "Sincronización completada"
+              : `Error: ${syncResult.error}`}
             {syncResult.output && (
               <pre className="mt-2 text-xs text-secondary whitespace-pre-wrap max-h-40 overflow-y-auto">{syncResult.output}</pre>
             )}
@@ -884,29 +1053,29 @@ export default function AdminPanel({ onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-chat-bg border border-border rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div className="bg-chat-bg border border-border rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-3xl h-[95vh] sm:max-h-[90vh] flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
-          <h2 className="text-lg font-bold text-primary">Panel de administración</h2>
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-border shrink-0">
+          <h2 className="text-base sm:text-lg font-bold text-primary">Panel de administración</h2>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-hover text-tertiary hover:text-primary transition-colors"
+            className="p-2.5 rounded-xl bg-hover hover:bg-border text-secondary hover:text-primary transition-colors active:scale-95"
           >
             <IconClose className="w-5 h-5" />
           </button>
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-border px-6 shrink-0">
+        <div className="flex gap-1.5 px-4 sm:px-6 py-2.5 border-b border-border shrink-0 overflow-x-auto scrollbar-thin">
           {TABS.map((tab) => (
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${
+              className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap active:scale-95 ${
                 activeTab === tab.key
-                  ? "text-accent border-accent"
-                  : "text-tertiary border-transparent hover:text-primary"
+                  ? "bg-accent text-white shadow-sm"
+                  : "bg-hover text-secondary hover:bg-border hover:text-primary"
               }`}
             >
               {tab.label}
@@ -915,7 +1084,7 @@ export default function AdminPanel({ onClose }) {
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6 scrollbar-thin">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 scrollbar-thin">
           {loading ? (
             <div className="flex items-center justify-center py-16">
               <IconLoader className="w-6 h-6 animate-spin text-accent" />

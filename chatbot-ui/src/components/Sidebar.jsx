@@ -60,14 +60,14 @@ export default function Sidebar({
       <div className="flex flex-col items-center py-3 px-1 bg-sidebar border-r border-border w-[50px] shrink-0">
         <button
           onClick={onToggleCollapse}
-          className="p-2 rounded-lg hover:bg-hover transition-colors text-secondary hover:text-primary"
+          className="p-2.5 rounded-lg bg-hover hover:bg-border transition-colors text-secondary hover:text-primary active:scale-95"
           title="Abrir sidebar"
         >
           <IconSidebar className="w-5 h-5" />
         </button>
         <button
           onClick={onNewChat}
-          className="mt-3 p-2 rounded-lg hover:bg-hover transition-colors text-secondary hover:text-primary"
+          className="mt-3 p-2.5 rounded-lg bg-hover hover:bg-border transition-colors text-secondary hover:text-primary active:scale-95"
           title="Nuevo chat"
         >
           <IconPlus className="w-5 h-5" />
@@ -82,14 +82,14 @@ export default function Sidebar({
       <div className="flex items-center justify-between p-3 border-b border-border">
         <button
           onClick={onToggleCollapse}
-          className="p-1.5 rounded-lg hover:bg-hover transition-colors text-secondary hover:text-primary"
+          className="p-2.5 rounded-lg bg-hover hover:bg-border transition-colors text-secondary hover:text-primary active:scale-95"
           title="Cerrar sidebar"
         >
           <IconSidebar className="w-5 h-5" />
         </button>
         <button
           onClick={onNewChat}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-medium transition-colors"
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-semibold transition-colors active:scale-95 shadow-sm"
         >
           <IconPlus className="w-4 h-4" />
           Nuevo chat
@@ -112,9 +112,9 @@ export default function Sidebar({
           return (
             <div
               key={chat.id}
-              className={`group flex items-center gap-2 px-3 py-2.5 mx-2 rounded-lg cursor-pointer transition-colors ${
+              className={`group flex items-center gap-2 px-3 py-3 mx-2 rounded-lg cursor-pointer transition-colors ${
                 isActive
-                  ? "bg-active-chat text-primary"
+                  ? "bg-active-chat text-primary shadow-sm"
                   : "text-secondary hover:bg-hover hover:text-primary"
               }`}
               onClick={() => !isEditing && onSelectChat(chat.id)}

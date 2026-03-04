@@ -33,10 +33,11 @@ from typing import Optional, List, Dict
 
 # RAG imports
 try:
-    from rag_module import RAGSystem, build_rag_prompt, load_index
+    from rag_module import RAGSystem, build_rag_prompt, load_index, save_index, RAG_DATA_DIR
     RAG_AVAILABLE = True
 except ImportError:
     RAG_AVAILABLE = False
+    RAG_DATA_DIR = Path("rag_data")
     print("⚠️  RAG module not available. Install with: pip install chromadb")
 
 # Fix SSL issues for model downloads
@@ -1340,11 +1341,11 @@ async def rag_search_endpoint(query: str, n_results: int = 3):
 @app.post("/rag/sync")
 async def rag_sync_endpoint():
     """Trigger RAG synchronization (runs rag_admin.py sync)."""
-    import subprocess
+    import subprocess, sys
     
     try:
         result = subprocess.run(
-            ["python", "rag_admin.py", "sync"],
+            [sys.executable, "rag_admin.py", "sync"],
             capture_output=True,
             text=True,
             timeout=120
@@ -1361,6 +1362,123 @@ async def rag_sync_endpoint():
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@app.post("/rag/rebuild")
+async def rag_rebuild_endpoint():
+    """Rebuild the entire RAG knowledge base from scratch."""
+    import subprocess, sys, shutil
+    
+    try:
+        # 1. Clear existing database
+        if RAG_DATA_DIR.exists():
+            shutil.rmtree(RAG_DATA_DIR)
+        
+        # 2. Reset in-memory RAG
+        global _rag_system
+        _rag_system = None
+        
+        # 3. Re-sync from scratch
+        result = subprocess.run(
+            [sys.executable, "rag_admin.py", "sync"],
+            capture_output=True,
+            text=True,
+            timeout=180
+        )
+        
+        return {
+            "success": result.returncode == 0,
+            "output": result.stdout,
+            "error": result.stderr if result.returncode != 0 else None
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/rag/scan")
+async def rag_scan_documents():
+    """Scan documents/ folder and return file list with indexing status."""
+    try:
+        from document_processors import SUPPORTED_EXTENSIONS
+    except ImportError:
+        return {"files": [], "error": "document_processors not available"}
+    
+    docs_dir = Path("documents")
+    if not docs_dir.exists():
+        return {"files": [], "supported_extensions": [], "message": "documents/ folder not found"}
+    
+    # Load current index to compare
+    index = {}
+    if RAG_AVAILABLE:
+        try:
+            index = load_index().get("files", {})
+        except Exception:
+            pass
+    
+    files = []
+    for file_path in sorted(docs_dir.rglob("*")):
+        if file_path.is_dir():
+            continue
+        if file_path.name.startswith('.'):
+            continue
+        if file_path.name.upper() == 'README.MD':
+            continue
+        
+        rel_path = str(file_path.relative_to(docs_dir))
+        ext = file_path.suffix.lower()
+        supported = ext in SUPPORTED_EXTENSIONS
+        indexed = rel_path in index
+        
+        file_info = {
+            "path": rel_path,
+            "name": file_path.name,
+            "extension": ext,
+            "size": file_path.stat().st_size,
+            "supported": supported,
+            "indexed": indexed,
+        }
+        
+        if indexed:
+            file_info["chunks"] = index[rel_path].get("chunks", 0)
+            file_info["indexed_at"] = index[rel_path].get("indexed_at", "")
+        
+        files.append(file_info)
+    
+    return {
+        "files": files,
+        "supported_extensions": sorted(SUPPORTED_EXTENSIONS) if SUPPORTED_EXTENSIONS else [],
+        "total": len(files),
+        "indexed_count": sum(1 for f in files if f.get("indexed")),
+    }
+
+
+@app.delete("/rag/documents/{file_path:path}")
+async def rag_remove_document(file_path: str):
+    """Remove a specific document from the RAG index."""
+    if not RAG_AVAILABLE:
+        raise HTTPException(status_code=400, detail="RAG not available")
+    
+    rag = get_rag_system()
+    if not rag:
+        raise HTTPException(status_code=500, detail="RAG system not initialized")
+    
+    index = load_index()
+    
+    if file_path not in index.get("files", {}):
+        raise HTTPException(status_code=404, detail=f"Document '{file_path}' not found in index")
+    
+    # Delete from ChromaDB
+    deleted = rag.delete_by_source(file_path)
+    
+    # Remove from index file
+    del index["files"][file_path]
+    save_index(index)
+    
+    return {
+        "success": True,
+        "deleted_chunks": deleted,
+        "message": f"Removed '{file_path}' ({deleted} chunks)"
+    }
 
 
 # --------------------------------------------------------------------

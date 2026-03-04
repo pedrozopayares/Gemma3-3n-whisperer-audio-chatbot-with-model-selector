@@ -100,6 +100,26 @@ export async function syncRag() {
   return res.json();
 }
 
+export async function rebuildRag() {
+  const res = await fetch(`${API_BASE}/rag/rebuild`, { method: "POST" });
+  if (!res.ok) throw new Error("Error al reconstruir RAG");
+  return res.json();
+}
+
+export async function scanDocuments() {
+  const res = await fetch(`${API_BASE}/rag/scan`);
+  if (!res.ok) throw new Error("Error al escanear documentos");
+  return res.json();
+}
+
+export async function removeRagDocument(filePath) {
+  const res = await fetch(`${API_BASE}/rag/documents/${encodeURIComponent(filePath)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Error al eliminar documento del índice");
+  return res.json();
+}
+
 /* ── Health ────────────────────────────────────────────── */
 
 export async function getHealth() {

@@ -154,7 +154,7 @@ export default function ChatInput({
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={disabled}
-              className="p-2 rounded-lg hover:bg-hover text-tertiary hover:text-primary transition-colors disabled:opacity-40"
+              className="p-2.5 rounded-lg hover:bg-hover text-tertiary hover:text-primary transition-colors disabled:opacity-40 active:scale-95"
               title="Adjuntar imagen"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -164,7 +164,7 @@ export default function ChatInput({
             <button
               onClick={() => setShowContext(!showContext)}
               disabled={disabled}
-              className={`p-2 rounded-lg hover:bg-hover transition-colors disabled:opacity-40 ${showContext ? "text-accent" : "text-tertiary hover:text-primary"}`}
+              className={`p-2.5 rounded-lg hover:bg-hover transition-colors disabled:opacity-40 active:scale-95 ${showContext ? "text-accent bg-accent/10" : "text-tertiary hover:text-primary"}`}
               title="Contexto del chat"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
