@@ -182,6 +182,7 @@ AVAILABLE_MODELS = {
 
 DEFAULT_MODEL = "gemma2:2b"
 DEFAULT_VISION_MODEL = "llava:7b"
+PREFERRED_LANGUAGE = "español"
 
 # --------------------------------------------------------------------
 # Smart Routing Configuration
@@ -395,14 +396,21 @@ async def ollama_generate_with_image(
     prompt: str,
     image_path: str,
     temperature: float = 0.7,
+    system_prompt: str = None,
+    history: list = None,
 ) -> str:
     """
-    Generate response with image using Ollama vision model.
+    Generate response with image using Ollama vision model via /api/chat.
+    
+    Uses the chat endpoint so we can pass a system message (e.g. language instruction)
+    and conversation history for follow-up context.
     
     Args:
         model: Vision model name (e.g., "llava:7b")
         prompt: Text prompt about the image
         image_path: Path to image file
+        system_prompt: Optional system instruction
+        history: Optional list of prior messages [{"role": ..., "content": ...}]
     
     Returns:
         Generated text response
@@ -411,13 +419,23 @@ async def ollama_generate_with_image(
     with open(image_path, "rb") as f:
         image_b64 = base64.b64encode(f.read()).decode("utf-8")
     
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    if history:
+        messages.extend(history)
+    messages.append({
+        "role": "user",
+        "content": prompt,
+        "images": [image_b64],
+    })
+    
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{OLLAMA_BASE_URL}/api/generate",
+            f"{OLLAMA_BASE_URL}/api/chat",
             json={
                 "model": model,
-                "prompt": prompt,
-                "images": [image_b64],
+                "messages": messages,
                 "stream": False,
                 "options": {
                     "temperature": temperature,
@@ -431,7 +449,7 @@ async def ollama_generate_with_image(
             raise HTTPException(500, f"Ollama vision error: {error_text}")
         
         data = response.json()
-        return data.get("response", "").strip()
+        return data.get("message", {}).get("content", "").strip()
 
 
 async def route_query(query: str) -> tuple[str, str]:
@@ -653,6 +671,10 @@ def build_system_prompt(
     """Build system prompt combining internal context with optional user context, summary, and RAG context."""
     # INTERNAL_CONTEXT es el prompt base principal
     system_prompt = INTERNAL_CONTEXT if INTERNAL_CONTEXT else "Eres un asistente amigable y útil. Responde en español de forma concisa."
+    
+    # Instrucción de idioma preferido
+    if PREFERRED_LANGUAGE:
+        system_prompt = f"{system_prompt}\n\nIMPORTANTE: Siempre responde en {PREFERRED_LANGUAGE} a menos que el usuario explícitamente pida otro idioma."
     
     # Agregar contexto RAG (documentos relevantes de la base de conocimiento)
     # PRIORIDAD: La base de conocimiento tiene precedencia sobre el conocimiento general
@@ -1046,19 +1068,23 @@ async def ask_image(
     image: UploadFile = File(...),
     context: Optional[str] = Form(None),
     model: Optional[str] = Form(None),
+    history: Optional[str] = Form(None),
 ):
-    """Process image with text prompt using Ollama vision model (LLaVA)."""
+    """Process image with text prompt using Ollama vision model."""
     img_path = None
     try:
-        print(f"\nReceived image request with prompt: {prompt}")
+        print(f"\nReceived image request with prompt: {prompt}, requested model: {model}")
         
         # Select vision model
-        vision_model = model or DEFAULT_VISION_MODEL
+        # "auto" or empty means use default vision model
+        vision_model = model if (model and model != "auto") else DEFAULT_VISION_MODEL
         
-        # Check if model supports vision
+        # If the selected model is explicitly known as non-vision, use default
         if vision_model in AVAILABLE_MODELS and not AVAILABLE_MODELS[vision_model].get("vision"):
             vision_model = DEFAULT_VISION_MODEL
-            print(f"Model doesn't support vision, using {vision_model}")
+            print(f"Model doesn't support vision, falling back to {vision_model}")
+        
+        print(f"Using vision model: {vision_model}")
         
         suffix = os.path.splitext(image.filename)[1] or ".png"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -1066,15 +1092,40 @@ async def ask_image(
             tmp.write(await image.read())
         print(f"Saved image to {img_path}")
         
-        # Build prompt with context
-        full_prompt = prompt
+        # Build system prompt with language instruction
+        base_ctx = INTERNAL_CONTEXT if INTERNAL_CONTEXT else "Eres un asistente amigable y útil."
+        system_prompt = base_ctx
+        if PREFERRED_LANGUAGE:
+            system_prompt = f"{system_prompt}\n\nIMPORTANTE: Siempre responde en {PREFERRED_LANGUAGE} a menos que el usuario explícitamente pida otro idioma."
         if context:
-            full_prompt = f"{context}\n\n{prompt}"
+            system_prompt = f"{system_prompt}\n\nContexto del usuario: {context}"
         
-        response = await ollama_generate_with_image(vision_model, full_prompt, img_path)
+        # Parse history JSON if provided
+        chat_history = None
+        if history:
+            try:
+                import json
+                parsed = json.loads(history)
+                if isinstance(parsed, list):
+                    chat_history = []
+                    for msg in parsed:
+                        role = "assistant" if msg.get("role") == "model" else "user"
+                        chat_history.append({"role": role, "content": msg.get("text", "")})
+            except Exception as e:
+                print(f"Failed to parse history: {e}")
+        
+        response = await ollama_generate_with_image(
+            vision_model, prompt, img_path,
+            system_prompt=system_prompt,
+            history=chat_history
+        )
         print(f"Response: {response}")
         
-        return {"text": response, "model": vision_model}
+        return {
+            "text": response,
+            "model": vision_model,
+            "image_context": f"[El usuario envió una imagen. Preguntó: \"{prompt}\". Tu respuesta fue: \"{response[:500]}\"]",
+        }
     
     except Exception as exc:
         import traceback
@@ -1594,6 +1645,7 @@ DEFAULT_CONFIG = {
     "context_window_size": CONTEXT_WINDOW_SIZE,
     "max_history_messages": MAX_HISTORY_MESSAGES,
     "keep_recent_messages": KEEP_RECENT_MESSAGES,
+    "preferred_language": PREFERRED_LANGUAGE,
 }
 
 
@@ -1623,6 +1675,7 @@ def apply_config(config: dict):
     global ROUTER_MODEL, ROUTE_MODELS
     global RAG_ENABLED, RAG_TOP_K, RAG_MIN_RELEVANCE
     global CONTEXT_WINDOW_SIZE, MAX_HISTORY_MESSAGES, KEEP_RECENT_MESSAGES
+    global PREFERRED_LANGUAGE
 
     INTERNAL_CONTEXT = config.get("system_prompt", INTERNAL_CONTEXT)
     DEFAULT_MODEL = config.get("default_model", DEFAULT_MODEL)
@@ -1635,6 +1688,7 @@ def apply_config(config: dict):
     CONTEXT_WINDOW_SIZE = config.get("context_window_size", CONTEXT_WINDOW_SIZE)
     MAX_HISTORY_MESSAGES = config.get("max_history_messages", MAX_HISTORY_MESSAGES)
     KEEP_RECENT_MESSAGES = config.get("keep_recent_messages", KEEP_RECENT_MESSAGES)
+    PREFERRED_LANGUAGE = config.get("preferred_language", PREFERRED_LANGUAGE)
 
 
 # Apply saved config on startup
@@ -1666,6 +1720,7 @@ class ConfigUpdate(BaseModel):
     context_window_size: Optional[int] = None
     max_history_messages: Optional[int] = None
     keep_recent_messages: Optional[int] = None
+    preferred_language: Optional[str] = None
 
 
 @app.put("/admin/config")

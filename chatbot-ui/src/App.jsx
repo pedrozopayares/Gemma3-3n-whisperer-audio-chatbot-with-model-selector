@@ -45,9 +45,22 @@ function buildHistory(messages) {
     })
     .map((m) => {
       const tp = m.parts.find((p) => p.type === "text" || p.text);
+      let text = tp.text.replace(/^🎤 "/, "").replace(/"$/, "");
+      // For user messages with images, note that an image was sent
+      if (m.role === "user" && m.parts?.some((p) => p.type === "image")) {
+        text = `[Imagen adjunta] ${text}`;
+      }
+      // For user messages from audio transcription
+      if (m.role === "user" && m.isAudio) {
+        text = `[Audio transcripción] ${text}`;
+      }
+      // For model replies that included image context, append it
+      if (m.imageContext) {
+        text = `${text}\n\n${m.imageContext}`;
+      }
       return {
         role: m.role,
-        text: tp.text.replace(/^🎤 "/, "").replace(/"$/, ""),
+        text,
       };
     });
 }
@@ -253,6 +266,7 @@ export default function App() {
   const handleAudioReady = useCallback(
     async (wavBlob) => {
       setIsProcessing(true);
+      setError(null);
       const chatId = ensureActiveChat();
       try {
         const b64 = await blobToBase64(wavBlob);
@@ -275,12 +289,16 @@ export default function App() {
         if (transcription) {
           setConversation((prev) => {
             const updated = [...prev];
-            const lastIdx = updated.length - 1;
-            if (updated[lastIdx]?.role === "user") {
-              updated[lastIdx] = {
-                role: "user",
-                parts: [{ type: "text", text: `🎤 "${transcription}"` }],
-              };
+            // Find the audio placeholder searching backwards for robustness
+            for (let i = updated.length - 1; i >= 0; i--) {
+              if (updated[i]?.role === "user" && updated[i]?.parts?.[0]?.type === "audio") {
+                updated[i] = {
+                  role: "user",
+                  parts: [{ type: "text", text: `🎤 "${transcription}"` }],
+                  isAudio: true,
+                };
+                break;
+              }
             }
             if (chatId) setMessages(chatId, updated);
             return updated;
@@ -301,8 +319,17 @@ export default function App() {
     [conversation, selectedModel, chatContext, addReply, ensureActiveChat]
   );
 
+  const handleAudioError = useCallback(
+    (err) => {
+      setError(`Audio error: ${err?.message || err}`);
+      setIsProcessing(false);
+    },
+    []
+  );
+
   const { isRecording, recordingTime, startRecording, stopRecording } = useAudioRecorder({
     onAudioReady: handleAudioReady,
+    onError: handleAudioError,
   });
 
   // ── Text submit ──
@@ -352,6 +379,7 @@ export default function App() {
       setError(null);
       const chatId = ensureActiveChat();
 
+      const history = buildHistory(conversation);
       const previewUrl = URL.createObjectURL(file);
       const userMsg = {
         role: "user",
@@ -373,16 +401,32 @@ export default function App() {
         const data = await sendImage({
           imageFile: file,
           prompt,
+          model: selectedModel,
           context: chatContext.trim() || null,
+          history,
         });
-        addReply(data.text);
+        // Add reply, and inject image_context as a hidden part so follow-up
+        // text messages include context about the image in history.
+        const replyMsg = {
+          role: "model",
+          parts: [{ text: data.text }],
+          imageContext: data.image_context || null,
+        };
+        setConversation((prev) => {
+          const updated = [...prev, replyMsg];
+          if (activeChatId) {
+            setMessages(activeChatId, updated);
+            refreshChatList();
+          }
+          return updated;
+        });
       } catch (e) {
         setError(`Image error: ${e.message}`);
       } finally {
         setIsProcessing(false);
       }
     },
-    [chatContext, addReply, ensureActiveChat]
+    [conversation, chatContext, selectedModel, activeChatId, ensureActiveChat]
   );
 
   // ── Resend message ──

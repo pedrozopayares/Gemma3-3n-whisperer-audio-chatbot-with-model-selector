@@ -71,6 +71,7 @@ function GeneralTab({ config, onSave }) {
   const [form, setForm] = useState({
     app_name: "",
     system_prompt: "",
+    preferred_language: "español",
     context_window_size: 8192,
     max_history_messages: 20,
     keep_recent_messages: 6,
@@ -83,6 +84,7 @@ function GeneralTab({ config, onSave }) {
       setForm({
         app_name: config.app_name || "",
         system_prompt: config.system_prompt || "",
+        preferred_language: config.preferred_language ?? "español",
         context_window_size: config.context_window_size || 8192,
         max_history_messages: config.max_history_messages || 20,
         keep_recent_messages: config.keep_recent_messages || 6,
@@ -127,6 +129,20 @@ function GeneralTab({ config, onSave }) {
               rows={5}
               placeholder="Eres un asistente experto…"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm text-secondary mb-1">Idioma preferido de respuesta</label>
+            <div className="flex items-center gap-3">
+              <input
+                type="text"
+                value={form.preferred_language}
+                onChange={(e) => setForm({ ...form, preferred_language: e.target.value })}
+                className="flex-1 bg-input-bg text-primary text-sm px-3 py-2.5 rounded-lg border border-border focus:outline-none focus:border-accent"
+                placeholder="español"
+              />
+              <span className="text-xs text-tertiary shrink-0">Déjalo vacío para no forzar idioma</span>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

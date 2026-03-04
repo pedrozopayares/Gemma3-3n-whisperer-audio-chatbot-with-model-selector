@@ -29,17 +29,19 @@ export default function ChatInput({
   const [textPrompt, setTextPrompt] = useState("");
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
-  const [imagePrompt, setImagePrompt] = useState("");
   const [showContext, setShowContext] = useState(false);
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
 
   const handleSend = () => {
-    if (imageFile && imagePrompt.trim()) {
-      onSendImage({ file: imageFile, prompt: imagePrompt.trim() });
+    // If an image is attached, always send via image endpoint
+    if (imageFile) {
+      const prompt = textPrompt.trim() || "Describe esta imagen";
+      onSendImage({ file: imageFile, prompt });
       setImageFile(null);
       setImagePreview(null);
-      setImagePrompt("");
+      setTextPrompt("");
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
       return;
     }
     if (!textPrompt.trim()) return;
@@ -66,7 +68,6 @@ export default function ChatInput({
   const removeImage = () => {
     setImageFile(null);
     setImagePreview(null);
-    setImagePrompt("");
   };
 
   const handleTextareaInput = (e) => {
@@ -125,17 +126,6 @@ export default function ChatInput({
               <IconClose className="w-3 h-3 text-white" />
             </button>
           </div>
-          {imageFile && (
-            <input
-              type="text"
-              value={imagePrompt}
-              onChange={(e) => setImagePrompt(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleSend(); }}
-              placeholder="Pregunta sobre la imagen…"
-              className="mt-2 w-full bg-input-bg text-primary text-sm px-3 py-2 rounded-lg border border-border focus:outline-none focus:border-accent placeholder:text-placeholder"
-              disabled={disabled}
-            />
-          )}
         </div>
       )}
 
@@ -181,7 +171,7 @@ export default function ChatInput({
               value={textPrompt}
               onChange={handleTextareaInput}
               onKeyDown={handleKeyDown}
-              placeholder={isRecording ? `Grabando… ${recordingTime}s` : "Envía un mensaje…"}
+              placeholder={isRecording ? `Grabando… ${recordingTime}s` : imageFile ? "Escribe sobre la imagen o envía para describirla…" : "Envía un mensaje…"}
               disabled={disabled}
               className="w-full bg-input-bg text-primary text-sm px-4 py-3 rounded-2xl border border-border focus:outline-none focus:border-accent resize-none placeholder:text-placeholder disabled:opacity-50 max-h-[200px]"
               rows={1}
@@ -214,7 +204,7 @@ export default function ChatInput({
             {/* Send button */}
             <button
               onClick={handleSend}
-              disabled={disabled || (!textPrompt.trim() && !(imageFile && imagePrompt.trim()))}
+              disabled={disabled || (!textPrompt.trim() && !imageFile)}
               className="p-2.5 rounded-full bg-accent hover:bg-accent-hover text-white transition-colors disabled:opacity-40 disabled:bg-accent/50"
               title="Enviar"
             >

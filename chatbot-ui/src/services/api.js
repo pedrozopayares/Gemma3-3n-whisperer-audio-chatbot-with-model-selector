@@ -69,11 +69,13 @@ export async function sendText({ text, model, context, history }) {
 /**
  * Send image + prompt to the backend for vision LLM response.
  */
-export async function sendImage({ imageFile, prompt, context }) {
+export async function sendImage({ imageFile, prompt, model, context, history }) {
   const form = new FormData();
   form.append("prompt", prompt);
   form.append("image", imageFile, imageFile.name);
+  if (model) form.append("model", model);
   if (context) form.append("context", context);
+  if (history && history.length > 0) form.append("history", JSON.stringify(history));
 
   const res = await fetch(`${API_BASE}/ask_image`, { method: "POST", body: form });
   if (!res.ok) {

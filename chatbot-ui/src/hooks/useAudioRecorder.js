@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 const MAX_RECORDING_DURATION = 30000;
 const SILENCE_THRESHOLD = 0.01;
@@ -114,9 +114,15 @@ async function convertToWav(audioBlob) {
  *
  * @returns {{ isRecording, recordingTime, startRecording, stopRecording }}
  */
-export default function useAudioRecorder({ onAudioReady }) {
+export default function useAudioRecorder({ onAudioReady, onError }) {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+
+  // Keep latest callbacks in refs to avoid stale closures in onstop/setTimeout
+  const onAudioReadyRef = useRef(onAudioReady);
+  const onErrorRef = useRef(onError);
+  useEffect(() => { onAudioReadyRef.current = onAudioReady; }, [onAudioReady]);
+  useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -158,10 +164,15 @@ export default function useAudioRecorder({ onAudioReady }) {
       audioChunksRef.current = [];
       mediaRecorderRef.current.ondataavailable = (e) => audioChunksRef.current.push(e.data);
       mediaRecorderRef.current.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType });
-        const wavBlob = await convertToWav(audioBlob);
-        streamRef.current?.getTracks().forEach((t) => t.stop());
-        onAudioReady?.(wavBlob);
+        try {
+          const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType });
+          const wavBlob = await convertToWav(audioBlob);
+          streamRef.current?.getTracks().forEach((t) => t.stop());
+          onAudioReadyRef.current?.(wavBlob);
+        } catch (err) {
+          streamRef.current?.getTracks().forEach((t) => t.stop());
+          onErrorRef.current?.(err);
+        }
       };
 
       audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
@@ -195,9 +206,9 @@ export default function useAudioRecorder({ onAudioReady }) {
 
       maxTimeoutRef.current = setTimeout(() => stopRecording(), MAX_RECORDING_DURATION);
     } catch {
-      throw new Error("No se pudo acceder al micrófono.");
+      onErrorRef.current?.(new Error("No se pudo acceder al micrófono."));
     }
-  }, [onAudioReady, stopRecording]);
+  }, [stopRecording]);
 
   return { isRecording, recordingTime, startRecording, stopRecording };
 }
