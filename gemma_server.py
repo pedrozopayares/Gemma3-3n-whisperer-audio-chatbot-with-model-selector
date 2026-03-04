@@ -24,9 +24,10 @@ import httpx
 import numpy as np
 import scipy.io.wavfile as wavfile
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 
@@ -493,10 +494,15 @@ app = FastAPI(title="Ollama + Whisper Server")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# --------------------------------------------------------------------
+# Serve the built chatbot-ui (SPA) if the dist folder exists
+# --------------------------------------------------------------------
+UI_DIR = Path(__file__).resolve().parent / "chatbot-ui-dist"
 
 
 # =============================================================================
@@ -1749,6 +1755,31 @@ async def health():
     }
 
 
+# --------------------------------------------------------------------
+# Serve the built React SPA (must be AFTER all API routes)
+# --------------------------------------------------------------------
+if UI_DIR.exists():
+    # Serve static assets (js, css, images, etc.)
+    app.mount("/assets", StaticFiles(directory=UI_DIR / "assets"), name="ui-assets")
+
+    # Catch-all: return index.html for any non-API path (SPA client-side routing)
+    @app.get("/{full_path:path}")
+    async def serve_spa(request: Request, full_path: str):
+        # If a static file exists at that path, serve it (e.g. favicon.ico)
+        file_path = UI_DIR / full_path
+        if full_path and file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+        # Otherwise, serve index.html for client-side routing
+        return FileResponse(UI_DIR / "index.html")
+else:
+    @app.get("/")
+    async def root():
+        return {
+            "message": "Ollama + Whisper API server running. "
+                       "Build the UI with: cd chatbot-ui && npm run build"
+        }
+
+
 if __name__ == "__main__":
     import uvicorn
     print("=" * 60)
@@ -1757,5 +1788,9 @@ if __name__ == "__main__":
     print(f"Ollama URL: {OLLAMA_BASE_URL}")
     print(f"Default model: {DEFAULT_MODEL}")
     print(f"Vision model: {DEFAULT_VISION_MODEL}")
+    if UI_DIR.exists():
+        print(f"UI served from: {UI_DIR}")
+    else:
+        print("⚠️  UI not built. Run: cd chatbot-ui && npm run build")
     print("=" * 60)
     uvicorn.run(app, host="0.0.0.0", port=8000)

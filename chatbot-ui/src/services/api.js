@@ -1,8 +1,10 @@
 /**
  * API service for communicating with the backend server.
+ * When served by the backend, API_BASE is empty (same origin).
+ * For local Vite dev, set VITE_API_BASE=http://localhost:8000
  */
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 /**
  * Fetch available models from the backend.
