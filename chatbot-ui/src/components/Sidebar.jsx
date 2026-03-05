@@ -54,10 +54,10 @@ export default function Sidebar({
     }
   };
 
-  // Collapsed state — just show toggle button
+  // Collapsed state — just show toggle button (desktop only; mobile hides entirely)
   if (isCollapsed) {
     return (
-      <div className="flex flex-col items-center py-3 px-1 bg-sidebar border-r border-border w-[50px] shrink-0">
+      <div className="hidden lg:flex flex-col items-center py-3 px-1 bg-sidebar border-r border-border w-[50px] shrink-0">
         <button
           onClick={onToggleCollapse}
           className="p-2.5 rounded-lg bg-hover hover:bg-border transition-colors text-secondary hover:text-primary active:scale-95"
@@ -78,8 +78,8 @@ export default function Sidebar({
 
   return (
     <div className="flex flex-col bg-sidebar border-r border-border w-[260px] shrink-0 h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between p-3 border-b border-border">
+      {/* Header — padded for mobile safe area (notch / status bar) */}
+      <div className="flex items-center justify-between p-3 pt-[max(0.75rem,env(safe-area-inset-top))] border-b border-border">
         <button
           onClick={onToggleCollapse}
           className="p-2.5 rounded-lg bg-hover hover:bg-border transition-colors text-secondary hover:text-primary active:scale-95"

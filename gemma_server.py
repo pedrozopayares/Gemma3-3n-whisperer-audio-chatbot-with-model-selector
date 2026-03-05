@@ -243,6 +243,22 @@ RAG_MIN_RELEVANCE = 0.3
 _rag_system = None
 
 
+def reset_rag_system():
+    """Properly close and release the current RAG system so the next
+    call to get_rag_system() creates a fresh instance that reads the
+    latest data from disk."""
+    global _rag_system
+    if _rag_system is not None:
+        try:
+            _rag_system.close()
+        except Exception:
+            pass
+        _rag_system = None
+    # Force garbage collection so ChromaDB file handles are released
+    import gc
+    gc.collect()
+
+
 def get_rag_system() -> Optional["RAGSystem"]:
     """Get or initialize the RAG system."""
     global _rag_system
@@ -251,7 +267,8 @@ def get_rag_system() -> Optional["RAGSystem"]:
     if _rag_system is None:
         try:
             _rag_system = RAGSystem()
-            print("📚 RAG system initialized")
+            count = _rag_system.collection.count()
+            print(f"📚 RAG system initialized ({count} chunks in DB)")
         except Exception as e:
             print(f"⚠️  RAG initialization failed: {e}")
             return None
@@ -270,15 +287,20 @@ async def search_rag_context(query: str) -> tuple[str, List[Dict]]:
     """
     rag = get_rag_system()
     if not rag:
+        print("📚 RAG: system not available (disabled or not initialized)")
         return "", []
     
     try:
         results = rag.search(query, n_results=RAG_TOP_K)
+        print(f"📚 RAG: raw search returned {len(results)} results for: '{query[:60]}'")
+        for r in results:
+            print(f"   → {r.get('relevance', 0):.3f} | {r.get('metadata', {}).get('source', '?')}")
         
         # Filter by relevance
         relevant = [r for r in results if r.get("relevance", 0) >= RAG_MIN_RELEVANCE]
         
         if not relevant:
+            print(f"📚 RAG: no results above min_relevance={RAG_MIN_RELEVANCE}")
             return "", []
         
         # Format context for prompt
@@ -292,12 +314,15 @@ async def search_rag_context(query: str) -> tuple[str, List[Dict]]:
             context_parts.append(f"### {header} (relevancia: {relevance:.0f}%)\n{doc['content']}")
         
         formatted = "\n\n".join(context_parts)
-        print(f"📚 RAG: Found {len(relevant)} relevant documents for: '{query[:50]}...'")
+        rag_tokens = estimate_tokens(formatted)
+        print(f"📚 RAG: injecting {len(relevant)} docs (~{rag_tokens} tokens) into prompt")
         
         return formatted, relevant
     
     except Exception as e:
         print(f"⚠️  RAG search error: {e}")
+        import traceback
+        traceback.print_exc()
         return "", []
 
 
@@ -710,6 +735,11 @@ def build_ollama_messages(
     """
     Build messages array for Ollama chat API.
     
+    Protects the system prompt (which contains RAG context) from being
+    truncated by Ollama when the total tokens exceed num_ctx.  If the
+    conversation history would push us over budget, older history
+    messages are dropped before the system prompt is touched.
+    
     Args:
         system_prompt: System instructions
         user_text: Current user message
@@ -720,9 +750,34 @@ def build_ollama_messages(
     """
     messages = [{"role": "system", "content": system_prompt}]
     
-    # Add history
+    # Reserve tokens for system prompt, current user message, and response
+    system_tokens = estimate_tokens(system_prompt)
+    user_tokens = estimate_tokens(user_text)
+    response_budget = 512  # num_predict
+    reserved = system_tokens + user_tokens + response_budget + 50  # 50 overhead
+    available_for_history = max(0, CONTEXT_WINDOW_SIZE - reserved)
+    
+    # Add history, trimming oldest messages if they exceed the budget
     if history:
-        for msg in history:
+        history_tokens = 0
+        trimmed_history = []
+        # Walk from most recent to oldest, accumulating tokens
+        for msg in reversed(history):
+            msg_tokens = estimate_tokens(msg.get("text", "")) + 4
+            if history_tokens + msg_tokens > available_for_history:
+                break
+            trimmed_history.append(msg)
+            history_tokens += msg_tokens
+        # Reverse back to chronological order
+        trimmed_history.reverse()
+        
+        if len(trimmed_history) < len(history):
+            dropped = len(history) - len(trimmed_history)
+            print(f"📚 Token budget: dropped {dropped} old history msgs to protect RAG context "
+                  f"(system={system_tokens}, history={history_tokens}, user={user_tokens}, "
+                  f"budget={CONTEXT_WINDOW_SIZE})")
+        
+        for msg in trimmed_history:
             role = "assistant" if msg["role"] == "model" else "user"
             messages.append({"role": role, "content": msg["text"]})
     
@@ -1392,57 +1447,77 @@ async def rag_search_endpoint(query: str, n_results: int = 3):
 @app.post("/rag/sync")
 async def rag_sync_endpoint():
     """Trigger RAG synchronization (runs rag_admin.py sync)."""
-    import subprocess, sys
+    import sys, asyncio
     
     try:
-        result = subprocess.run(
-            [sys.executable, "rag_admin.py", "sync"],
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
+        # Release current ChromaDB client BEFORE the subprocess writes
+        reset_rag_system()
         
-        # Reload RAG system after sync
-        global _rag_system
-        _rag_system = None
+        # Run sync in a subprocess (non-blocking for the event loop)
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "rag_admin.py", "sync",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        stdout_str = stdout.decode() if stdout else ""
+        stderr_str = stderr.decode() if stderr else ""
+        
+        # Ensure RAG is reset so next request gets fresh data
+        reset_rag_system()
+        print(f"📚 RAG sync completed (exit={proc.returncode})")
         
         return {
-            "success": result.returncode == 0,
-            "output": result.stdout,
-            "error": result.stderr if result.returncode != 0 else None
+            "success": proc.returncode == 0,
+            "output": stdout_str,
+            "error": stderr_str if proc.returncode != 0 else None
         }
+    except asyncio.TimeoutError:
+        reset_rag_system()
+        return {"success": False, "error": "Sync timed out after 120 seconds"}
     except Exception as e:
+        reset_rag_system()
         return {"success": False, "error": str(e)}
 
 
 @app.post("/rag/rebuild")
 async def rag_rebuild_endpoint():
     """Rebuild the entire RAG knowledge base from scratch."""
-    import subprocess, sys, shutil
+    import sys, shutil, asyncio
     
     try:
-        # 1. Clear existing database
+        # 1. Release ChromaDB client FIRST (before deleting files)
+        reset_rag_system()
+        
+        # 2. Clear existing database
         if RAG_DATA_DIR.exists():
             shutil.rmtree(RAG_DATA_DIR)
+            print("📚 RAG: deleted rag_data/ for rebuild")
         
-        # 2. Reset in-memory RAG
-        global _rag_system
-        _rag_system = None
-        
-        # 3. Re-sync from scratch
-        result = subprocess.run(
-            [sys.executable, "rag_admin.py", "sync"],
-            capture_output=True,
-            text=True,
-            timeout=180
+        # 3. Re-sync from scratch (non-blocking)
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "rag_admin.py", "sync",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+        stdout_str = stdout.decode() if stdout else ""
+        stderr_str = stderr.decode() if stderr else ""
+        
+        # 4. Ensure fresh state for next request
+        reset_rag_system()
+        print(f"📚 RAG rebuild completed (exit={proc.returncode})")
         
         return {
-            "success": result.returncode == 0,
-            "output": result.stdout,
-            "error": result.stderr if result.returncode != 0 else None
+            "success": proc.returncode == 0,
+            "output": stdout_str,
+            "error": stderr_str if proc.returncode != 0 else None
         }
+    except asyncio.TimeoutError:
+        reset_rag_system()
+        return {"success": False, "error": "Rebuild timed out after 180 seconds"}
     except Exception as e:
+        reset_rag_system()
         return {"success": False, "error": str(e)}
 
 

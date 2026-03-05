@@ -80,7 +80,7 @@ export default function ChatInput({
   const disabled = isRecording || isProcessing;
 
   return (
-    <div className="border-t border-border bg-chat-bg">
+    <div className="border-t border-border bg-chat-bg pb-[env(safe-area-inset-bottom)]">
       {/* Context toggle */}
       {showContext && (
         <div className="px-4 pt-3">

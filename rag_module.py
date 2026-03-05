@@ -253,6 +253,21 @@ class RAGSystem:
             "embedding_model": EMBEDDING_MODEL
         }
     
+    def close(self):
+        """Release ChromaDB client resources to allow clean re-initialization."""
+        try:
+            if hasattr(self, 'client') and self.client:
+                # Release internal resources so a new PersistentClient
+                # on the same path reads the latest data from disk.
+                if hasattr(self.client, '_identifier_to_system'):
+                    self.client._identifier_to_system.clear()
+                del self.collection
+                del self.client
+                self.client = None
+                self.collection = None
+        except Exception as e:
+            print(f"Close warning: {e}")
+
     def clear(self):
         """Elimina todos los documentos de la colección."""
         try:

@@ -76,7 +76,7 @@ export default function App() {
   // ── UI state ──
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 1024);
   const [viewerChunk, setViewerChunk] = useState(null);
 
   // ── TTS state ──
@@ -536,36 +536,52 @@ export default function App() {
     </div>
   );
 
+  // Close sidebar on mobile when selecting a chat
+  const handleSelectChat = useCallback((id) => {
+    switchToChat(id);
+    if (window.innerWidth < 1024) setSidebarCollapsed(true);
+  }, [switchToChat]);
+
   // ─── RENDER ─────────────────────────────────────────────
   return (
     <div className="flex w-full h-screen bg-chat-bg text-primary overflow-hidden">
-      {/* Sidebar */}
-      <Sidebar
-        chats={chats}
-        activeChatId={activeChatId}
-        onSelectChat={switchToChat}
-        onNewChat={handleNewChat}
-        onDeleteChat={handleDeleteChat}
-        onRenameChat={handleRenameChat}
-        isCollapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        modelSelector={modelSelector}
-        ttsControls={ttsControls}
-      />
+      {/* Sidebar — overlay on mobile, inline on desktop */}
+      {!sidebarCollapsed && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+          onClick={() => setSidebarCollapsed(true)}
+        />
+      )}
+      <div className={`${
+        sidebarCollapsed
+          ? "hidden lg:flex"
+          : "fixed inset-y-0 left-0 z-50 lg:relative lg:z-auto"
+      }`}>
+        <Sidebar
+          chats={chats}
+          activeChatId={activeChatId}
+          onSelectChat={handleSelectChat}
+          onNewChat={handleNewChat}
+          onDeleteChat={handleDeleteChat}
+          onRenameChat={handleRenameChat}
+          isCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+          modelSelector={modelSelector}
+          ttsControls={ttsControls}
+        />
+      </div>
 
       {/* Main chat area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <header className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-chat-bg shrink-0">
+        {/* Header — pt respects notch / status bar on mobile */}
+        <header className="flex items-center justify-between px-4 py-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] border-b border-border bg-chat-bg shrink-0">
           <div className="flex items-center gap-3">
-            {sidebarCollapsed && (
-              <button
-                onClick={() => setSidebarCollapsed(false)}
-                className="p-2.5 rounded-lg bg-hover hover:bg-border text-secondary hover:text-primary transition-colors active:scale-95 lg:hidden"
-              >
-                <IconSidebar className="w-5 h-5" />
-              </button>
-            )}
+            <button
+              onClick={() => setSidebarCollapsed(false)}
+              className="p-2.5 rounded-lg bg-hover hover:bg-border text-secondary hover:text-primary transition-colors active:scale-95 lg:hidden"
+            >
+              <IconSidebar className="w-5 h-5" />
+            </button>
             <h1 className="text-sm font-semibold text-primary">
               Yotojoro IA
             </h1>
