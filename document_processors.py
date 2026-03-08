@@ -29,6 +29,9 @@ class DocumentChunk:
 # --------------------------------------------------------------------
 DEFAULT_CHUNK_SIZE = 1000  # caracteres
 DEFAULT_OVERLAP = 100
+# nomic-embed-text context = 8192 tokens; ~4 chars/token → 32K chars.
+# Usamos un límite conservador para evitar "input length exceeds context length".
+MAX_EMBEDDING_CHARS = 28000
 
 
 # --------------------------------------------------------------------
@@ -372,38 +375,66 @@ def process_excel_file(
             df.columns = [str(col).strip() for col in df.columns]
             
             if strategy == "markdown":
-                # Tabla completa o en chunks
-                if len(df) <= rows_per_chunk:
-                    md = df.to_markdown(index=False)
-                    chunks.append(DocumentChunk(
-                        content=f"## {sheet_name}\n\n{md}",
-                        metadata={
-                            "source": source,
-                            "sheet": sheet_name,
-                            "type": "excel",
-                            "rows": len(df),
-                            "columns": list(df.columns)
-                        },
-                        chunk_id=f"{source}_{sheet_name}_{chunk_num}"
-                    ))
-                    chunk_num += 1
-                else:
-                    # Dividir en chunks
-                    for i in range(0, len(df), rows_per_chunk):
-                        chunk_df = df.iloc[i:i + rows_per_chunk]
-                        md = chunk_df.to_markdown(index=False)
+                # Helper: dividir una tabla markdown en sub-tablas que
+                # respeten MAX_EMBEDDING_CHARS.  Las tablas markdown usan
+                # saltos de línea simples (\n), así que chunk_text (basado
+                # en \n\n) no funciona.  En su lugar reagrupamos filas.
+                def _split_md_table(md_text: str, limit: int) -> List[str]:
+                    """Divide una tabla markdown en bloques ≤ limit chars,
+                    preservando el header (primera línea + separador)."""
+                    lines = md_text.split("\n")
+                    if len(lines) <= 2:
+                        return [md_text]
+                    header = "\n".join(lines[:2])  # header + |---|
+                    data_lines = lines[2:]
+                    sub_tables = []
+                    current_lines = []
+                    current_len = len(header) + 1  # +1 for \n
+                    for line in data_lines:
+                        line_len = len(line) + 1
+                        if current_len + line_len > limit and current_lines:
+                            sub_tables.append(header + "\n" + "\n".join(current_lines))
+                            current_lines = []
+                            current_len = len(header) + 1
+                        current_lines.append(line)
+                        current_len += line_len
+                    if current_lines:
+                        sub_tables.append(header + "\n" + "\n".join(current_lines))
+                    return sub_tables
+
+                def _add_md_chunks(md_text: str, label: str, extra_meta: dict):
+                    nonlocal chunk_num
+                    full = f"## {label}\n\n{md_text}"
+                    if len(full) <= MAX_EMBEDDING_CHARS:
                         chunks.append(DocumentChunk(
-                            content=f"## {sheet_name} (filas {i+1}-{min(i+rows_per_chunk, len(df))})\n\n{md}",
-                            metadata={
-                                "source": source,
-                                "sheet": sheet_name,
-                                "type": "excel",
-                                "row_start": i+1,
-                                "row_end": min(i+rows_per_chunk, len(df))
-                            },
+                            content=full,
+                            metadata={"source": source, "sheet": sheet_name, "type": "excel", **extra_meta},
                             chunk_id=f"{source}_{sheet_name}_{chunk_num}"
                         ))
                         chunk_num += 1
+                    else:
+                        # Re-dividir la tabla en sub-tablas más pequeñas
+                        header_overhead = len(f"## {label} (parte 1)\n\n")
+                        sub_tables = _split_md_table(md_text, MAX_EMBEDDING_CHARS - header_overhead)
+                        for k, st in enumerate(sub_tables):
+                            part_label = f"{label} (parte {k+1})" if len(sub_tables) > 1 else label
+                            chunks.append(DocumentChunk(
+                                content=f"## {part_label}\n\n{st}",
+                                metadata={"source": source, "sheet": sheet_name, "type": "excel", "part": k + 1, **extra_meta},
+                                chunk_id=f"{source}_{sheet_name}_{chunk_num}"
+                            ))
+                            chunk_num += 1
+
+                # Tabla completa o en chunks por filas
+                if len(df) <= rows_per_chunk:
+                    md = df.to_markdown(index=False)
+                    _add_md_chunks(md, sheet_name, {"rows": len(df), "columns": list(df.columns)})
+                else:
+                    for i in range(0, len(df), rows_per_chunk):
+                        chunk_df = df.iloc[i:i + rows_per_chunk]
+                        md = chunk_df.to_markdown(index=False)
+                        label = f"{sheet_name} (filas {i+1}-{min(i+rows_per_chunk, len(df))})"
+                        _add_md_chunks(md, label, {"row_start": i+1, "row_end": min(i+rows_per_chunk, len(df))})
             
             elif strategy == "rows":
                 # Una entrada por fila
@@ -426,6 +457,117 @@ def process_excel_file(
         print(f"Error processing Excel {file_path}: {e}")
         return []
     
+    return chunks
+
+
+# --------------------------------------------------------------------
+# CSV Processor (.csv)
+# --------------------------------------------------------------------
+
+def process_csv_file(
+    file_path: Path,
+    rows_per_chunk: int = 30,
+) -> List[DocumentChunk]:
+    """
+    Procesa archivos CSV.
+
+    Detecta automáticamente el delimitador y codificación.
+    Genera chunks en formato markdown-tabla, respetando MAX_EMBEDDING_CHARS.
+
+    Args:
+        file_path: Ruta al archivo
+        rows_per_chunk: Filas por chunk (para tablas grandes)
+
+    Returns:
+        Lista de DocumentChunk
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        print("Error: pandas no instalado. Ejecuta: pip install pandas")
+        return []
+
+    source = file_path.name
+    chunks = []
+    chunk_num = 0
+
+    try:
+        # Intentar detectar codificación
+        for encoding in ("utf-8", "latin-1", "cp1252"):
+            try:
+                df = pd.read_csv(file_path, encoding=encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            df = pd.read_csv(file_path, encoding="utf-8", errors="replace")
+
+        if df.empty:
+            return []
+
+        # Limpiar nombres de columnas
+        df.columns = [str(col).strip() for col in df.columns]
+
+        # Helper para dividir tabla markdown por filas
+        def _split_md_table(md_text: str, limit: int) -> List[str]:
+            lines = md_text.split("\n")
+            if len(lines) <= 2:
+                return [md_text]
+            header = "\n".join(lines[:2])
+            data_lines = lines[2:]
+            sub_tables: List[str] = []
+            current_lines: List[str] = []
+            current_len = len(header) + 1
+            for line in data_lines:
+                line_len = len(line) + 1
+                if current_len + line_len > limit and current_lines:
+                    sub_tables.append(header + "\n" + "\n".join(current_lines))
+                    current_lines = []
+                    current_len = len(header) + 1
+                current_lines.append(line)
+                current_len += line_len
+            if current_lines:
+                sub_tables.append(header + "\n" + "\n".join(current_lines))
+            return sub_tables
+
+        # Generar tabla markdown en bloques de rows_per_chunk
+        for i in range(0, len(df), rows_per_chunk):
+            chunk_df = df.iloc[i:i + rows_per_chunk]
+            md = chunk_df.to_markdown(index=False)
+            label = source if len(df) <= rows_per_chunk else f"{source} (filas {i+1}-{min(i+rows_per_chunk, len(df))})"
+            full = f"## {label}\n\n{md}"
+            if len(full) <= MAX_EMBEDDING_CHARS:
+                chunks.append(DocumentChunk(
+                    content=full,
+                    metadata={
+                        "source": source,
+                        "type": "csv",
+                        "rows": len(chunk_df),
+                        "columns": list(df.columns),
+                    },
+                    chunk_id=f"{source}_{chunk_num}"
+                ))
+                chunk_num += 1
+            else:
+                header_overhead = len(f"## {label} (parte 1)\n\n")
+                for k, st in enumerate(_split_md_table(md, MAX_EMBEDDING_CHARS - header_overhead)):
+                    part_label = f"{label} (parte {k+1})"
+                    chunks.append(DocumentChunk(
+                        content=f"## {part_label}\n\n{st}",
+                        metadata={
+                            "source": source,
+                            "type": "csv",
+                            "part": k + 1,
+                            "columns": list(df.columns),
+                        },
+                        chunk_id=f"{source}_{chunk_num}"
+                    ))
+                    chunk_num += 1
+
+    except Exception as e:
+        print(f"Error processing CSV {file_path}: {e}")
+        return []
+
     return chunks
 
 
@@ -519,6 +661,7 @@ PROCESSORS = {
     '.docx': process_word_file,
     '.xlsx': process_excel_file,
     '.xls': process_excel_file,
+    '.csv': process_csv_file,
     '.pdf': process_pdf_file,
 }
 

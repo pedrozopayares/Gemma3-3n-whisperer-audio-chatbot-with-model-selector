@@ -1580,7 +1580,7 @@ async def rag_scan_documents():
 
 @app.delete("/rag/documents/{file_path:path}")
 async def rag_remove_document(file_path: str):
-    """Remove a specific document from the RAG index."""
+    """Remove a specific document from the RAG index AND from disk."""
     if not RAG_AVAILABLE:
         raise HTTPException(status_code=400, detail="RAG not available")
     
@@ -1600,10 +1600,29 @@ async def rag_remove_document(file_path: str):
     del index["files"][file_path]
     save_index(index)
     
+    # Also delete the source file from documents/ so sync won't re-index it
+    docs_dir = Path("documents")
+    source_file = docs_dir / file_path
+    file_deleted = False
+    if source_file.exists():
+        try:
+            # Security: ensure path is inside documents/
+            if str(source_file.resolve()).startswith(str(docs_dir.resolve())):
+                source_file.unlink()
+                file_deleted = True
+                print(f"📚 RAG: deleted source file {source_file}")
+                # Remove parent dir if empty (don't remove documents/ itself)
+                parent = source_file.parent
+                if parent != docs_dir and parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+        except Exception as e:
+            print(f"⚠️  Could not delete source file {source_file}: {e}")
+    
     return {
         "success": True,
         "deleted_chunks": deleted,
-        "message": f"Removed '{file_path}' ({deleted} chunks)"
+        "file_deleted": file_deleted,
+        "message": f"Removed '{file_path}' ({deleted} chunks)" + (" + archivo eliminado" if file_deleted else "")
     }
 
 

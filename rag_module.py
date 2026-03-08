@@ -35,6 +35,10 @@ DOCUMENTS_DIR = Path("documents")
 # Ollama embedding configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 EMBEDDING_MODEL = "nomic-embed-text"  # ~275MB, muy eficiente
+# Límite seguro de caracteres por texto para el modelo de embeddings.
+# nomic-embed-text tiene 8192 tokens de contexto (~4 chars/token → 32K).
+# Usamos 28 000 chars como margen de seguridad.
+MAX_EMBED_CHARS = 28_000
 
 
 class OllamaEmbeddingFunction:
@@ -48,30 +52,55 @@ class OllamaEmbeddingFunction:
         """Return embedding function name (required by ChromaDB)."""
         return f"ollama_{self.model_name}"
     
-    def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Genera embeddings para una lista de strings planos."""
+    def _get_embeddings(self, texts: List[str], allow_fallback: bool = True) -> List[List[float]]:
+        """Genera embeddings para una lista de strings planos.
+        
+        Args:
+            texts: Textos a embeddear
+            allow_fallback: Si True, retorna vectores nulos en caso de error.
+                            Si False, lanza excepción (usado en ingesta).
+        """
+        # Truncar textos que excedan el contexto del modelo de embeddings
+        safe_texts = []
+        for t in texts:
+            if len(t) > MAX_EMBED_CHARS:
+                print(f"⚠️ Embedding text truncated: {len(t)} → {MAX_EMBED_CHARS} chars")
+                safe_texts.append(t[:MAX_EMBED_CHARS])
+            else:
+                safe_texts.append(t)
         try:
             response = httpx.post(
                 self.url,
-                json={"model": self.model_name, "input": texts},
-                timeout=60.0
+                json={"model": self.model_name, "input": safe_texts},
+                timeout=120.0
             )
             
             if response.status_code == 200:
                 data = response.json()
                 return data["embeddings"]
             else:
-                print(f"Error getting embeddings: {response.status_code} - {response.text[:200]}")
-                return [[0.0] * 768 for _ in texts]
+                msg = f"Error getting embeddings: {response.status_code} - {response.text[:200]}"
+                print(msg)
+                if not allow_fallback:
+                    raise RuntimeError(msg)
+                return [[0.0] * 768 for _ in safe_texts]
+        except (RuntimeError,):
+            raise
         except Exception as e:
-            print(f"Embedding error: {e}")
-            return [[0.0] * 768 for _ in texts]
+            msg = f"Embedding error: {e}"
+            print(msg)
+            if not allow_fallback:
+                raise RuntimeError(msg) from e
+            return [[0.0] * 768 for _ in safe_texts]
 
     def __call__(self, input) -> List[np.ndarray]:
         """
         Genera embeddings. ChromaDB 1.5 pasa input como List[List[str]] (lista de listas).
         Versiones anteriores pasan List[str].
         Retorna List[np.ndarray] como requiere ChromaDB 1.5.
+        
+        Propagates errors (allow_fallback=False) so failed embeddings don't
+        produce zero-vector documents in ChromaDB.
         """
         # Flatten: ChromaDB 1.5 sends [['text1'], ['text2']] instead of ['text1', 'text2']
         flat_texts = []
@@ -81,7 +110,7 @@ class OllamaEmbeddingFunction:
         else:
             flat_texts = list(input)
         
-        raw = self._get_embeddings(flat_texts)
+        raw = self._get_embeddings(flat_texts, allow_fallback=False)
         return [np.array(e, dtype=np.float32) for e in raw]
 
     def embed_query(self, input = "", query: str = "", **kwargs) -> List[np.ndarray]:
@@ -96,12 +125,13 @@ class OllamaEmbeddingFunction:
         return [np.array(e, dtype=np.float32) for e in raw]
 
     def embed_documents(self, input = None, documents: List[str] = None, **kwargs) -> List[np.ndarray]:
-        """Genera embeddings para documentos (requerido por ChromaDB)."""
+        """Genera embeddings para documentos (requerido por ChromaDB).
+        Propagates errors so failed embeddings don't produce zero-vectors."""
         texts = input or documents or []
         # Flatten if ChromaDB passes nested lists: [['text1'], ['text2']]
         if texts and isinstance(texts[0], list):
             texts = [t[0] if t else "" for t in texts]
-        raw = self._get_embeddings(texts)
+        raw = self._get_embeddings(texts, allow_fallback=False)
         return [np.array(e, dtype=np.float32) for e in raw]
 
 
@@ -143,6 +173,8 @@ class RAGSystem:
     ) -> int:
         """
         Agrega documentos a la base de conocimiento.
+        Processes chunks individually so one embedding failure doesn't
+        discard the entire batch.
         
         Args:
             documents: Lista de textos a indexar
@@ -150,7 +182,7 @@ class RAGSystem:
             metadatas: Metadata opcional para cada documento
         
         Returns:
-            Número de documentos agregados
+            Número de documentos agregados exitosamente
         """
         if not documents:
             return 0
@@ -159,16 +191,40 @@ class RAGSystem:
         if metadatas is None:
             metadatas = [{"indexed_at": datetime.now().isoformat()} for _ in documents]
         
-        try:
-            self.collection.add(
-                documents=documents,
-                ids=ids,
-                metadatas=metadatas
-            )
-            return len(documents)
-        except Exception as e:
-            print(f"Error adding documents: {e}")
-            return 0
+        added = 0
+        failed = 0
+        # Process in small batches of 5 to balance speed vs. resilience
+        batch_size = 5
+        for i in range(0, len(documents), batch_size):
+            batch_docs = documents[i:i + batch_size]
+            batch_ids = ids[i:i + batch_size]
+            batch_meta = metadatas[i:i + batch_size]
+            try:
+                self.collection.add(
+                    documents=batch_docs,
+                    ids=batch_ids,
+                    metadatas=batch_meta
+                )
+                added += len(batch_docs)
+            except Exception as e:
+                # Batch failed — fall back to individual inserts
+                print(f"⚠️ Batch embedding failed, trying individually: {e}")
+                for j in range(len(batch_docs)):
+                    try:
+                        self.collection.add(
+                            documents=[batch_docs[j]],
+                            ids=[batch_ids[j]],
+                            metadatas=[batch_meta[j]]
+                        )
+                        added += 1
+                    except Exception as e2:
+                        failed += 1
+                        src = batch_meta[j].get('source', batch_ids[j]) if batch_meta else batch_ids[j]
+                        print(f"❌ Skipped chunk {batch_ids[j]} ({src}): {e2}")
+        
+        if failed:
+            print(f"⚠️ add_documents: {added} added, {failed} failed")
+        return added
     
     def search(
         self,
